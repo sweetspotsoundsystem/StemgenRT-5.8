@@ -18,7 +18,7 @@ classifiers = [
 dependencies = ["numpy>=1.26"]
 
 [project.urls]
-Repository = "https://github.com/sweetspotsoundsystem/HS-TasNet"
+Repository = "https://github.com/sweetspotsoundsystem/StemgenRT-5.8"
 
 [project.optional-dependencies]
 streaming = ["onnxruntime==1.26.0", "soundfile>=0.12"]
