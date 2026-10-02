@@ -114,7 +114,7 @@ class NativeRenderer:
         import torch
 
         if (model.hop_samples != HOP or model.graph_alignment_samples != HOP
-                or tuple(model.source_order) != SOURCE_ORDER):
+                or tuple(model.architecture_metadata.get("source_order", ())) != SOURCE_ORDER):
             raise ValueError("Unsupported native model geometry or source order")
         if any(module.training for module in model.modules()):
             raise ValueError("Place the complete model in eval mode before evaluation")
