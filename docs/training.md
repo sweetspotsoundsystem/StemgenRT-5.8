@@ -96,6 +96,22 @@ The absence coefficient is 0.1 and the relative raw-head anchor is 0.01.
 Auxiliary source views retain their joint reduction and weights. The saved
 configuration includes these choices; exact resume requires the same values.
 
+For source-specific fine-tuning, set `target_source` in a copied training
+configuration to `"drums"`, `"bass"`, `"vocals"`, or `"other"`. Omit it or use
+`null` for the default joint objective. Source selection applies to waveform,
+complex-STFT, raw-output anchors, active-window SDR, absence penalties, and the
+optional teacher term. Each component uses the selected source's own reduction;
+there is no division by four. The auxiliary instrumental and vocals-only inputs
+retain their original weights and complete-group denominators.
+
+This changes the training objective while retaining the four-output model.
+Its internal source normalization and consistency correction couple the heads,
+so a loss on one output can still update other internal heads. A specialist
+therefore does not imply a cheaper one-output graph. Evaluate the selected
+stem, leakage, and any residual stem formed from it before using the result.
+The selected source is saved in the checkpoint configuration and cannot change
+during exact resume; initialize a fresh run to change objectives.
+
 ### Teacher-assisted baseline
 
 `configs/current-training.json` uses `teacher_coefficient=1.0` alongside the

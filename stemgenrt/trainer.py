@@ -21,12 +21,13 @@ from torch.utils.data import DataLoader
 from .checkpoint import ParameterEMA, load_model, load_training_checkpoint, save_training_checkpoint, state_sha256
 from .data import (AbsoluteIndexSampler, CROP_SAMPLES, WARMUP_SAMPLES, audio_sha,
                    batch_recipes, load_manifest, make_dataset, remix_batch, worker_init, policy as data_policy)
-from .losses import grouped_update, _teacher_weight
+from .losses import grouped_update, _teacher_weight, source_index
 from .model import StemgenRT58
 
 
 @dataclass(frozen=True)
 class TrainingConfig:
+    target_source: str | None = None
     attention_window: int = 32
     past_filter: bool = False
     steps: int = 2000
@@ -54,6 +55,7 @@ class TrainingConfig:
     teacher_checkpoint: str | None = None
 
     def validate(self):
+        source_index(self.target_source)
         if self.past_filter is not False:
             raise ValueError("The current model does not use a past filter")
         if type(self.attention_window) is not int or self.attention_window != 32:
@@ -168,6 +170,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     root_weights = config.root_weights or corpus.root_weights
     config = replace(config, root_weights=dict(root_weights)).validate()
     config_dict = asdict(config)
+    if config.target_source is None:
+        config_dict.pop("target_source")
     # Preserve the exact configuration identity of existing baseline checkpoints.
     if not config.past_filter:
         config_dict.pop("past_filter")
@@ -284,7 +288,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                 update = grouped_update(model, optimizer, ema, mixture, targets, step=step + 1,
                     warmup_samples=config.warmup_samples, ordinary_microbatch=config.microbatch_size,
                     auxiliary_microbatch=config.auxiliary_microbatch_size,
-                    extra_ordinary_primary_sdr_weight=config.extra_ordinary_primary_sdr_weight, **teacher_options)
+                    extra_ordinary_primary_sdr_weight=config.extra_ordinary_primary_sdr_weight,
+                    target_source=config.target_source, **teacher_options)
                 del teacher_options
                 step += 1
                 if any(not torch.equal(tensor, fixed[name]) for name, tensor in model.named_buffers()):
