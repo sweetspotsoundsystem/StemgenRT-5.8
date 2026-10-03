@@ -24,6 +24,7 @@ from .data import (AbsoluteIndexSampler, CROP_SAMPLES, WARMUP_SAMPLES, audio_sha
 from .losses import grouped_update, _teacher_weight, source_index
 from .model import StemgenRT58
 from .compact import CompactSeparator, SOURCE_ORDER
+from .banded import BandSeparator
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,9 @@ class TrainingConfig:
     model_family: str = "released"
     compact_hidden_size: int = 384
     compact_layers: int = 3
+    band_width: int = 96
+    band_global_width: int = 192
+    band_layers: int = 2
     target_source: str | None = None
     attention_window: int = 32
     past_filter: bool = False
@@ -60,16 +64,24 @@ class TrainingConfig:
 
     def validate(self):
         source_index(self.target_source)
-        if self.model_family not in ("released", "compact"):
+        if self.model_family not in ("released", "compact", "banded"):
             raise ValueError("Unknown model_family")
         if (type(self.compact_hidden_size) is not int or not 16 <= self.compact_hidden_size <= 1024
                 or type(self.compact_layers) is not int or not 1 <= self.compact_layers <= 4):
             raise ValueError("Invalid compact backbone geometry")
-        if self.model_family == "released" and (self.compact_hidden_size != 384 or self.compact_layers != 3):
-            raise ValueError("Compact geometry cannot configure the released model")
-        if self.model_family == "compact" and (self.target_source not in (None, "vocals")
+        if self.model_family != "compact" and (self.compact_hidden_size != 384 or self.compact_layers != 3):
+            raise ValueError("Compact geometry cannot configure another model family")
+        if self.model_family in ("compact", "banded") and (self.target_source not in (None, "vocals")
                                                or self.teacher_coefficient != 0.):
             raise ValueError("Compact experiments support joint or vocal supervised training without an online teacher")
+        if (type(self.band_width) is not int or not 16 <= self.band_width <= 256
+                or type(self.band_global_width) is not int or not 16 <= self.band_global_width <= 512
+                or type(self.band_layers) is not int or not 1 <= self.band_layers <= 4):
+            raise ValueError("Invalid band backbone geometry")
+        if self.model_family != "banded" and (self.band_width, self.band_global_width, self.band_layers) != (96, 192, 2):
+            raise ValueError("Band geometry cannot configure another model family")
+        if self.model_family == "banded" and self.precision != "fp32":
+            raise ValueError("Banded experiments require precision=fp32")
         if self.past_filter is not False:
             raise ValueError("The current model does not use a past filter")
         if type(self.attention_window) is not int or self.attention_window != 32:
@@ -184,9 +196,14 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     root_weights = config.root_weights or corpus.root_weights
     config = replace(config, root_weights=dict(root_weights)).validate()
     config_dict = asdict(config)
-    if config.model_family == "released":
-        for key in ("model_family", "compact_hidden_size", "compact_layers"):
+    if config.model_family != "banded":
+        for key in ("band_width", "band_global_width", "band_layers"):
             config_dict.pop(key)
+    if config.model_family != "compact":
+        for key in ("compact_hidden_size", "compact_layers"):
+            config_dict.pop(key)
+    if config.model_family == "released":
+        config_dict.pop("model_family")
     if config.target_source is None:
         config_dict.pop("target_source")
     # Preserve the exact configuration identity of existing baseline checkpoints.
@@ -235,9 +252,12 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         elif config.model_family == "compact":
             model = CompactSeparator(sources=("vocals",) if config.target_source == "vocals" else SOURCE_ORDER,
                 hidden_size=config.compact_hidden_size, layers=config.compact_layers)
+        elif config.model_family == "banded":
+            model = BandSeparator(sources=("vocals",) if config.target_source == "vocals" else SOURCE_ORDER,
+                band_width=config.band_width, global_width=config.band_global_width, layers=config.band_layers)
         else:
             model = StemgenRT58()
-        if type(model) is CompactSeparator:
+        if type(model) in (CompactSeparator, BandSeparator):
             model.provenance.update(parent_training_updates=model.provenance.get("training_updates", 0),
                                     current_stage_updates=0)
         model.to(device).train().requires_grad_(True)
@@ -319,7 +339,7 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     target_source=config.target_source, **teacher_options)
                 del teacher_options
                 step += 1
-                if type(model) is CompactSeparator:
+                if type(model) in (CompactSeparator, BandSeparator):
                     model.provenance.update(current_stage_updates=step,
                         training_updates=model.provenance["parent_training_updates"] + step)
                 if any(not torch.equal(tensor, fixed[name]) for name, tensor in model.named_buffers()):

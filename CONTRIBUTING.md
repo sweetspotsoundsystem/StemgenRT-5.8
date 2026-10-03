@@ -1,10 +1,15 @@
 # Contributing
 
-StemgenRT-5.8 supports one model: eight streaming states, 32 attention frames,
+The released StemgenRT-5.8 model uses eight streaming states, 32 attention frames,
 1024-sample analysis, 256-sample synthesis and 128-sample hops at 44.1 kHz.
 Keep model changes together with their training, data, loss, checkpoint and
 export support. Changes to parameter names, state shapes or checkpoint formats
 must account for existing model files.
+
+This research branch also contains experimental compact and banded separators.
+Keep their training, recovery and export interfaces separate from the released
+model; see [compact research](docs/compact-research.md). Synthetic CPU checks
+do not qualify those models for a plugin release.
 
 ## Development setup
 

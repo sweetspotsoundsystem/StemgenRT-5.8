@@ -44,3 +44,52 @@ is distinct from the released model's schema.
 The released ONNX exporter and plugin runtime do not yet support this
 architecture. A successful development comparison and a repeat experiment are
 prerequisites for further deployment work.
+
+## Causal band candidate
+
+`stemgenrt.banded.BandSeparator` preserves the same audio geometry while
+retaining separate temporal state in 20 nonoverlapping frequency bands. Each
+of two layers uses a shared width-96 temporal GRU across bands, followed by a
+width-192 global causal GRU. Independent projections encode and decode each
+band; equal-width projections run as batched matrix operations. Band boundaries
+partition the existing FFT and do not increase its frequency resolution.
+
+The single-output candidate and four-output control have the same backbone and
+the same initial vocal masks under a matched seed. Mask output projections are
+the only parameter difference. The recurrent core, current-frame normalization
+and synthesis never use future audio or source-axis normalization.
+
+| Default band model | Parameters | Dense MACs per hop | Persistent FP32 state |
+| --- | ---: | ---: | ---: |
+| Vocal | 2,720,484 | 4,805,568 | 25,088 bytes |
+| Joint control | 3,317,616 | 5,396,544 | 28,160 bytes |
+
+MAC counts exclude FFT, normalization, elementwise operations, copies and bias
+additions. Three vocal-sized networks would total 14,416,704 dense MACs per hop
+before that overhead. This is an arithmetic reference for the eventual system
+budget; bass and drums architectures have not been chosen or qualified.
+
+For band training, set `model_family="banded"`, `band_width=96`,
+`band_global_width=192`, `band_layers=2`, and `precision="fp32"`. Use
+`target_source="vocals"` for the vocal candidate and omit it for the joint
+control. The existing data, losses, grouped updates and detached warmup apply.
+BF16 and online teacher supervision are rejected. The distinct
+`stemgenrt-causal-bands-training-v1` schema restores raw weights, Adam, EMA,
+RNG, data position and training history. A fresh stage records inherited updates
+separately from updates in the current stage. The training schedule remains an
+experiment decision, not an architecture default.
+
+`stemgenrt.band_export.export_fp32(model, new_path)` exports the complete one-hop
+FP32 graph, including analysis FFT, complex masking, inverse FFT and overlap
+synthesis. Its inputs are one `[1,2,128]` audio chunk and four states: audio
+history, local band hidden state, global hidden state and spectral numerator
+tail. The outputs are one `[1,S,2,128]` chunk and the four updated states.
+Keep these states between callbacks and account for the 128-sample graph
+alignment. The host adds its own 128-sample accumulation delay.
+
+The graph carries experimental metadata and uses its own four-state interface;
+the released plugin loader does not accept it. CPU tests check streaming
+causality, all impulse phases, detached warmup, single-output loss updates,
+exact recovery and continuous ONNX/PyTorch waveform and state agreement.
+Separation quality and M4/M4 Pro performance remain unmeasured. Full training
+is on hold during architecture exploration.
