@@ -93,3 +93,31 @@ causality, all impulse phases, detached warmup, single-output loss updates,
 exact recovery and continuous ONNX/PyTorch waveform and state agreement.
 Separation quality and M4/M4 Pro performance remain unmeasured. Full training
 is on hold during architecture exploration.
+
+## Experimental integer export
+
+`stemgenrt.band_integer.export_int8(model, fp32_path, new_path,
+expected_fp32_sha256=...)` converts every learned matrix, including packed band
+projections and GRU input/hidden products. It authenticates the complete FP32
+graph and maps its matrices back to native weights. The default geometry has
+27 converted matrices; biases and other initializers remain byte-exact.
+
+Weights use symmetric S8 values in `[-64,64]` with one scalar scale per matrix
+initializer. A packed band group shares this scale, while retaining independent
+weights. Activations use one dynamic U8 scale over the complete one-hop matrix
+input. Scalar weight zero points avoid the unsupported batched per-channel
+zero-point shape in the pinned runtime.
+
+The analysis FFT and operations preceding activation quantizers use FP64.
+Integer products/dequantization, output masking, inverse synthesis, public
+audio and all persistent state tensors use FP32. This explicit boundary
+reduces numerical branch differences during repeated dynamic quantization.
+`make_integer_reference` reconstructs weight bytes with NumPy and executes
+independent int32 products without using ONNX Runtime as an arithmetic oracle.
+Tests compare continuous audio and every state, including stronger synthetic
+mask weights, and reject altered graph/source identities or quantized weights.
+
+This integer graph is a distinct numerical model. Agreement with its integer
+reference does not establish agreement with the original FP32 separator or
+separation quality. Any trained checkpoint needs a separate development quality
+comparison and native M4/M4 Pro runtime check for this variant.
