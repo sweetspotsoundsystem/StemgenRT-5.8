@@ -49,4 +49,7 @@ include = [
     "stemgenrt", "README.md", "LICENSE", "pyproject.toml", "docs", "CONTRIBUTING.md",
     "configs", "scripts", "tests", "models/README.md", "examples", "train_streaming.py",
 ]
-exclude = ["research", "runs", "models/*.onnx", "models/*.pt", "**/__pycache__", "**/*.pyc"]
+exclude = [
+    "research", "runs", "models/*.onnx", "models/*.pt", "**/__pycache__", "**/*.pyc",
+    "scripts/sync_research.py", "scripts/run_cpu_tests.py",
+]
