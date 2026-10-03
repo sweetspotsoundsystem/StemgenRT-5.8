@@ -94,6 +94,14 @@ exact recovery and continuous ONNX/PyTorch waveform and state agreement.
 Separation quality and M4/M4 Pro performance remain unmeasured. Full training
 is on hold during architecture exploration.
 
+During training, grouped band projections fold batch and time into one matrix
+dimension before batched multiplication. Autograd then accumulates each band's
+weight gradient directly, avoiding a separate weight matrix for every frame.
+The parameter shapes, full-group loss reduction and streaming states stay the
+same. Evaluation and export retain the original one-hop calculation. Output
+and gradient tests allow floating-point reduction roundoff between the two
+layouts; exact checkpoint continuation uses the same bound training source.
+
 ## Experimental integer export
 
 `stemgenrt.band_integer.export_int8(model, fp32_path, new_path,

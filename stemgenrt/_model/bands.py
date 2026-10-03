@@ -19,6 +19,16 @@ class GroupedAffine(nn.Module):
         self.bias = nn.Parameter(torch.stack([m.bias.detach() for m in linears]))
 
     def forward(self, values):
+        if self.training:
+            # Keep each band's weight matrix unexpanded during autograd.
+            # Broadcast matmul otherwise materializes a weight-gradient matrix
+            # for every batch/frame coordinate before reducing it. Folding
+            # those coordinates makes that reduction part of one batched GEMM.
+            grouped = values.movedim(-2, 0).flatten(1, -2)
+            result = torch.bmm(grouped, self.weight.transpose(-2, -1))
+            shape = (self.weight.shape[0], *values.shape[:-2], self.out_features)
+            return result.reshape(shape).movedim(0, -2) + self.bias
+        # Preserve the established one-hop evaluation/export graph exactly.
         return torch.matmul(values.unsqueeze(-2), self.weight.transpose(-2, -1)).squeeze(-2) + self.bias
 
 
