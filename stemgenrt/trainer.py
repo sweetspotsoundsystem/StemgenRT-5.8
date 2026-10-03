@@ -237,6 +237,9 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                 hidden_size=config.compact_hidden_size, layers=config.compact_layers)
         else:
             model = StemgenRT58()
+        if type(model) is CompactSeparator:
+            model.provenance.update(parent_training_updates=model.provenance.get("training_updates", 0),
+                                    current_stage_updates=0)
         model.to(device).train().requires_grad_(True)
         model.training_precision = config.precision
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, foreach=False)
@@ -316,6 +319,9 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     target_source=config.target_source, **teacher_options)
                 del teacher_options
                 step += 1
+                if type(model) is CompactSeparator:
+                    model.provenance.update(current_stage_updates=step,
+                        training_updates=model.provenance["parent_training_updates"] + step)
                 if any(not torch.equal(tensor, fixed[name]) for name, tensor in model.named_buffers()):
                     raise RuntimeError("Training modified a fixed model buffer")
                 row = {**update, **teacher_metadata, "lr": optimizer.param_groups[0]["lr"], "first_sample_index": first,

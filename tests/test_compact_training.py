@@ -91,6 +91,7 @@ def test_compact_checkpoint_restores_exact_next_update_and_inference_sources(tmp
     before = tree_fingerprint(checkpoint._rng_state())
     inference = load_model(path, expected_sha256=saved["sha256"], role="ema")
     assert inference.sources == sources and not inference.training
+    assert inference.provenance["current_stage_updates"] == inference.provenance["training_updates"] == 1
     assert tree_fingerprint(checkpoint._rng_state()) == before
     with pytest.raises(ValueError, match="configuration changed"):
         load_training_checkpoint(path, config={**config, "compact_hidden_size": 64})

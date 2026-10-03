@@ -373,9 +373,14 @@ def save_training_checkpoint(path, model, optimizer, ema, *, step, next_sample_i
     state = _cpu_tree(model.state_dict())
     _validate_tensors(state, model.state_dict())
     schema = COMPACT_SCHEMA if type(model) is CompactSeparator else SCHEMA
+    provenance = _raw_provenance(model.provenance)
+    if type(model) is CompactSeparator:
+        parent_updates = provenance.get("parent_training_updates", 0)
+        _require(type(parent_updates) is int and parent_updates >= 0, "Invalid compact parent update count")
+        provenance.update(current_stage_updates=step, training_updates=parent_updates + step)
     payload = {"schema": schema, "architecture": copy.deepcopy(model.architecture_metadata),
         "parameter_names": [name for name, _ in model.named_parameters()], "model": state,
-        "model_state_sha256": state_sha256(state), "provenance": _raw_provenance(model.provenance),
+        "model_state_sha256": state_sha256(state), "provenance": provenance,
         "optimizer": _cpu_tree(optimizer.state_dict()), "ema": ema.state_dict(model),
         "step": step, "next_sample_index": next_sample_index, "config": copy.deepcopy(config),
         "config_sha256": _json_sha(config), "data_identity": copy.deepcopy(data_identity),
@@ -400,6 +405,13 @@ def _training_payload(envelope):
              "Checkpoint configuration or dataset fingerprint differs")
     _validate_training_provenance(payload["config"], payload["provenance"])
     _validate_cursor(payload["step"], payload["next_sample_index"], payload["config"])
+    if payload["schema"] == COMPACT_SCHEMA:
+        provenance = payload["provenance"]
+        parent = provenance.get("parent_training_updates", 0)
+        _require(type(parent) is int and parent >= 0
+                 and provenance.get("current_stage_updates") == payload["step"]
+                 and provenance.get("training_updates") == parent + payload["step"],
+                 "Compact training history differs from checkpoint endpoint")
     return payload
 
 
