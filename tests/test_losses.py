@@ -159,6 +159,7 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(43)
         model = torch.nn.Linear(2, 8, dtype=torch.float64)
+    model.architecture_metadata = {"source_order": list(losses.SOURCE_NAMES)}
     with torch.no_grad():
         model.weight.mul_(.1)
         model.bias.mul_(.1)

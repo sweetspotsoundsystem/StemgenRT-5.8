@@ -74,12 +74,14 @@ L1 term also anchors the pre-residual heads, including the learned Other head.
 All coefficients affect training only. No teacher or fitted gain is used.
 """
     if (raw.ndim != 4 or raw.shape != deployed.shape or raw.shape != targets.shape
-            or raw.shape[1:3] != (4, 2) or raw.shape[-1] < WINDOW
+            or raw.shape[1:3] not in ((1, 2), (4, 2)) or raw.shape[-1] < WINDOW
             or mixture.shape != (raw.shape[0], 2, raw.shape[-1])
             or any(v.dtype != torch.float32 or v.device != raw.device
                    for v in (raw, deployed, targets, mixture))
             or targets.requires_grad or mixture.requires_grad):
-        raise ValueError("Require aligned FP32 raw/deployed/truth [B,4,2,T] and fixed physical mixture")
+        raise ValueError("Require aligned FP32 raw/deployed/truth [B,S,2,T] and fixed physical mixture")
+    if raw.shape[1] == 1 and target_source is not None:
+        raise ValueError("Single-output tensors are already source-selected; use target_source=None")
     windows = raw.shape[-1] // WINDOW
     with torch.autocast(raw.device.type, enabled=False):
         reference = targets[..., :windows * WINDOW].unflatten(-1, (windows, WINDOW))
@@ -120,8 +122,10 @@ class ReconstructionLoss:
 
 
 def reconstruction(raw, deployed, targets, mixture, *, target_source=None):
-    if raw.shape != deployed.shape or raw.shape != targets.shape or raw.ndim != 4 or raw.shape[1:3] != (4, 2):
-        raise ValueError("Require aligned four-stem stereo estimates and references")
+    if raw.shape != deployed.shape or raw.shape != targets.shape or raw.ndim != 4 or raw.shape[1:3] not in ((1, 2), (4, 2)):
+        raise ValueError("Require aligned one- or four-stem stereo estimates and references")
+    if raw.shape[1] == 1 and target_source is not None:
+        raise ValueError("Single-output tensors are already source-selected; use target_source=None")
     if mixture.shape != (raw.shape[0], 2, raw.shape[-1]) or raw.shape[-1] < 44100:
         raise ValueError("Require an aligned physical mixture and at least one scored second")
     if any(t.dtype != torch.float32 or t.device != raw.device for t in (raw, deployed, targets, mixture)):
@@ -214,9 +218,9 @@ class BatchReduction:
 
 
 def activity_counts(targets):
-    if (targets.ndim != 4 or targets.shape[0] < 1 or targets.shape[1:3] != (4, 2)
+    if (targets.ndim != 4 or targets.shape[0] < 1 or targets.shape[1:3] not in ((1, 2), (4, 2))
             or targets.shape[-1] < WINDOW or targets.dtype != torch.float32 or targets.requires_grad):
-        raise ValueError("Require fixed FP32 four-stem stereo references")
+        raise ValueError("Require fixed FP32 one- or four-stem stereo references")
     windows = targets.shape[-1] // WINDOW
     with torch.no_grad(), torch.autocast(targets.device.type, enabled=False):
         reference = targets[..., :windows * WINDOW].unflatten(-1, (windows, WINDOW))
@@ -239,12 +243,12 @@ division by the number of microbatches.
 """
     if (not isinstance(reduction, BatchReduction) or raw.ndim != 4
             or raw.shape != deployed.shape or raw.shape != targets.shape
-            or raw.shape[1:3] != (4, 2) or not 0 < raw.shape[0] <= reduction.examples
+            or raw.shape[1:3] not in ((1, 2), (4, 2)) or not 0 < raw.shape[0] <= reduction.examples
             or raw.shape[-1] != reduction.samples or reduction.samples < WINDOW
             or mixture.shape != (raw.shape[0], 2, raw.shape[-1])
             or any(v.dtype != torch.float32 or v.device != raw.device for v in (raw, deployed, targets, mixture))
             or targets.requires_grad or mixture.requires_grad
-            or any(v.shape != (4,) or v.dtype != torch.int64 or v.device != raw.device
+            or any(v.shape != (raw.shape[1],) or v.dtype != torch.int64 or v.device != raw.device
                    or v.requires_grad or bool((v < 0).any()) for v in (reduction.active, reduction.absent))
             or not bool(torch.all(reduction.active + reduction.absent ==
                                   reduction.examples * (reduction.samples // WINDOW)))):
@@ -336,14 +340,19 @@ def auxiliary_objective(raw, deployed, targets, mixture, *, weights=VIEW_WEIGHTS
     Explicit weights support CPU controls; production uses the fixed default.
     """
     _require(raw.ndim == 4 and raw.shape == deployed.shape == targets.shape
-            and raw.shape[:3] == (2, 4, 2) and mixture.shape == (2, 2, raw.shape[-1])
+            and raw.shape[:3] in ((2, 1, 2), (2, 4, 2)) and mixture.shape == (2, 2, raw.shape[-1])
             and type(weights) is tuple and len(weights) == 2
             and all(type(w) is float and math.isfinite(w) for w in weights)
             and weights[0] == 1. and 0 <= weights[1] <= 1.,
             "Require exactly the ordered source-view pair and valid fixed view weights")
-    _require(torch.count_nonzero(targets[0, 2]).item() == 0
-            and torch.count_nonzero(targets[1, [0, 1, 3]]).item() == 0,
-            "Source-view target ordering or removed stems changed")
+    if raw.shape[1] == 1:
+        _require(target_source is None and torch.count_nonzero(targets[0, 0]).item() == 0
+                 and torch.equal(targets[1, 0], mixture[1]),
+                 "Single-vocal source-view targets differ from instrumental/vocals-only inputs")
+    else:
+        _require(torch.count_nonzero(targets[0, 2]).item() == 0
+                and torch.count_nonzero(targets[1, [0, 1, 3]]).item() == 0,
+                "Source-view target ordering or removed stems changed")
     reduction = prepare_reduction(targets)
     terms = [contribution(raw[i:i + 1], deployed[i:i + 1], targets[i:i + 1], mixture[i:i + 1], reduction,
                           target_source=target_source)
@@ -402,6 +411,9 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
 
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
+    targets, loss_target_source = model_targets(model, targets, target_source)
+    if targets.shape[1] == 1 and teacher:
+        raise ValueError("Single-output experiment has no online teacher")
     if teacher:
         if group != "ordinary":
             raise ValueError("Teacher supervision is ordinary-only")
@@ -434,14 +446,14 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
     loss_function = objective if group == "ordinary" else auxiliary_objective
     ordinary_options = {"extra_ordinary_primary_sdr_weight": extra} if group == "ordinary" else {}
     terms = loss_function(raw, deployed, targets[..., warmup_samples:], mixture[..., warmup_samples:],
-                          target_source=target_source, **ordinary_options)
+                          target_source=loss_target_source, **ordinary_options)
     value = terms.total if group == "ordinary" else AUXILIARY_WEIGHT * terms.total
     details = {}
     if teacher:
         from ._losses.teacher import contribution as teacher_contribution
         reference = targets[..., warmup_samples:]
         term = teacher_contribution(deployed, teacher_targets, reference, mixture[..., warmup_samples:],
-                                    prepare_reduction(reference), target_source=target_source)
+                                    prepare_reduction(reference), target_source=loss_target_source)
         value = terms.total + teacher * term.total
         if not bool(torch.isfinite(value)):
             raise FloatingPointError("Nonfinite combined ordinary teacher loss")
@@ -485,6 +497,21 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
             "whole_group_objective_evaluations": 1, **details}
 
 
+def model_targets(model, targets, target_source):
+    """Map fixed DBVO references to the model's actual outputs, without padding.
+
+    Source views are constructed before this selection so their input mixtures
+    still contain the intended instrumental or vocals-only audio.
+    """
+    order = tuple(model.architecture_metadata["source_order"])
+    _require(targets.ndim == 4 and targets.shape[1:3] == (4, 2), "Require DBVO input references")
+    if order == SOURCE_NAMES:
+        return targets, target_source
+    _require(order == ("vocals",) and target_source == "vocals",
+             "Model output sources disagree with the selected training target")
+    return targets[:, 2:3], None
+
+
 def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordinary_microbatch=4,
                       auxiliary_microbatch=2, check_continue=None, after_group=None,
                       verify_input_gradients=False, progress=None, extra_ordinary_primary_sdr_weight=0.,
@@ -494,7 +521,8 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
     device = next(model.parameters()).device
     inputs = {"ordinary": (mixture_cpu.to(device), targets_cpu.to(device)),
               "auxiliary": (auxiliary_mix.to(device), auxiliary_targets.to(device))}
-    groups = prepare_groups(inputs["ordinary"][1][..., warmup_samples:], inputs["auxiliary"][1][..., warmup_samples:])
+    groups = prepare_groups(*(model_targets(model, inputs[group][1], target_source)[0][..., warmup_samples:]
+                              for group in ("ordinary", "auxiliary")))
     rows = {}
     for group, microbatch in (("ordinary", ordinary_microbatch), ("auxiliary", auxiliary_microbatch)):
         row = accumulate_group(model, *inputs[group], group=group, microbatch=microbatch,

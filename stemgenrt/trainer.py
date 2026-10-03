@@ -23,10 +23,14 @@ from .data import (AbsoluteIndexSampler, CROP_SAMPLES, WARMUP_SAMPLES, audio_sha
                    batch_recipes, load_manifest, make_dataset, remix_batch, worker_init, policy as data_policy)
 from .losses import grouped_update, _teacher_weight, source_index
 from .model import StemgenRT58
+from .compact import CompactSeparator, SOURCE_ORDER
 
 
 @dataclass(frozen=True)
 class TrainingConfig:
+    model_family: str = "released"
+    compact_hidden_size: int = 384
+    compact_layers: int = 3
     target_source: str | None = None
     attention_window: int = 32
     past_filter: bool = False
@@ -56,6 +60,16 @@ class TrainingConfig:
 
     def validate(self):
         source_index(self.target_source)
+        if self.model_family not in ("released", "compact"):
+            raise ValueError("Unknown model_family")
+        if (type(self.compact_hidden_size) is not int or not 16 <= self.compact_hidden_size <= 1024
+                or type(self.compact_layers) is not int or not 1 <= self.compact_layers <= 4):
+            raise ValueError("Invalid compact backbone geometry")
+        if self.model_family == "released" and (self.compact_hidden_size != 384 or self.compact_layers != 3):
+            raise ValueError("Compact geometry cannot configure the released model")
+        if self.model_family == "compact" and (self.target_source not in (None, "vocals")
+                                               or self.teacher_coefficient != 0.):
+            raise ValueError("Compact experiments support joint or vocal supervised training without an online teacher")
         if self.past_filter is not False:
             raise ValueError("The current model does not use a past filter")
         if type(self.attention_window) is not int or self.attention_window != 32:
@@ -170,6 +184,9 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     root_weights = config.root_weights or corpus.root_weights
     config = replace(config, root_weights=dict(root_weights)).validate()
     config_dict = asdict(config)
+    if config.model_family == "released":
+        for key in ("model_family", "compact_hidden_size", "compact_layers"):
+            config_dict.pop(key)
     if config.target_source is None:
         config_dict.pop("target_source")
     # Preserve the exact configuration identity of existing baseline checkpoints.
@@ -211,8 +228,15 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         if not 0 <= step < stop:
             raise ValueError("Resume must precede the requested stopping point")
     else:
-        model = (load_model(checkpoint, expected_sha256=sha256, role=role) if checkpoint
-                 else StemgenRT58())
+        if checkpoint:
+            model = load_model(checkpoint, expected_sha256=sha256, role=role)
+            from .checkpoint import _validate_geometry_config
+            _validate_geometry_config(config_dict, model)
+        elif config.model_family == "compact":
+            model = CompactSeparator(sources=("vocals",) if config.target_source == "vocals" else SOURCE_ORDER,
+                hidden_size=config.compact_hidden_size, layers=config.compact_layers)
+        else:
+            model = StemgenRT58()
         model.to(device).train().requires_grad_(True)
         model.training_precision = config.precision
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, foreach=False)

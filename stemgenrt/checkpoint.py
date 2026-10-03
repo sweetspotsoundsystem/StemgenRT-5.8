@@ -21,14 +21,29 @@ import numpy as np
 import torch
 
 from stemgenrt.model import StemgenRT58, VERSION
+from stemgenrt.compact import CompactSeparator, VERSION as COMPACT_VERSION, SOURCE_ORDER
 from stemgenrt._checkpoint.codec import CODEC, pack, unpack
 
 SCHEMA = "hs-tasnet-eight-state-training-v1"
+COMPACT_SCHEMA = "stemgenrt-compact-training-v1"
 NATIVE_SCHEMA = "latency58-branch-memory-inference-v1"
 EMA_SCHEMA = "latency58-branch-parameter-ema-v1"
 
 
 def _validate_geometry_config(config, model):
+    if type(model) is CompactSeparator:
+        expected_sources = ("vocals",) if config.get("target_source") == "vocals" else SOURCE_ORDER
+        _require(config.get("model_family") == "compact"
+                 and config.get("target_source") in (None, "vocals")
+                 and config.get("compact_hidden_size") == model.hidden_size
+                 and config.get("compact_layers") == model.layers
+                 and model.sources == expected_sources
+                 and config.get("teacher_coefficient", 0.) == 0.,
+                 "Training configuration differs from the compact architecture")
+        _require(config.get("past_filter", False) is False and config.get("attention_window", 32) == 32,
+                 "Compact configuration contains unsupported attention/filter overrides")
+        return
+    _require(config.get("model_family", "released") == "released", "Training model family differs")
     _require(type(config.get("past_filter", False)) is bool
              and config.get("past_filter", False) is False,
              "Training configuration past filter differs from the model")
@@ -94,7 +109,7 @@ class ParameterEMA:
     """One FP32 parameter update after each Adam update; fixed buffers stay fixed."""
 
     def __init__(self, model, *, decay=.995, base_state_sha256=None):
-        _require(type(model) is StemgenRT58 and type(decay) is float
+        _require(type(model) in (StemgenRT58, CompactSeparator) and type(decay) is float
                  and math.isfinite(decay) and 0 <= decay < 1, "Invalid EMA model or decay")
         self.decay, self.updates = decay, 0
         self.architecture = copy.deepcopy(model.architecture_metadata)
@@ -106,7 +121,7 @@ class ParameterEMA:
         self._validate_model(model)
 
     def _validate_model(self, model):
-        _require(type(model) is StemgenRT58 and model.architecture_metadata == self.architecture,
+        _require(type(model) in (StemgenRT58, CompactSeparator) and model.architecture_metadata == self.architecture,
                  "EMA architecture differs")
         parameters, buffers = dict(model.named_parameters()), dict(model.named_buffers())
         _require(list(parameters) == list(self.parameters) and len(parameters) == model.parameter_tensor_count
@@ -184,7 +199,11 @@ class ParameterEMA:
 def _new_model(architecture):
     # Constructing a loader must not consume the training RNG being restored.
     with torch.random.fork_rng(devices=[]), torch.device("cpu"):
-        model = StemgenRT58()
+        if architecture.get("version") == COMPACT_VERSION:
+            model = CompactSeparator(sources=architecture["source_order"],
+                hidden_size=architecture["hidden_size"], layers=architecture["layers"])
+        else:
+            model = StemgenRT58()
     _require(architecture == model.architecture_metadata, "Checkpoint architecture differs")
     return model
 
@@ -202,6 +221,7 @@ def _native_payload_model(payload):
              and type(payload["step"]) is int and payload["step"] > 0,
              "Unsupported native checkpoint schema")
     model = _new_model(payload["architecture"])
+    _require(type(model) is StemgenRT58, "Native historical checkpoints require the released architecture")
     _require(payload["architecture"] == model.architecture_metadata
              and payload["parameter_names"] == [name for name, _ in model.named_parameters()],
              "Native checkpoint architecture differs")
@@ -344,7 +364,7 @@ def _validate_training_provenance(config, provenance):
 def save_training_checkpoint(path, model, optimizer, ema, *, step, next_sample_index,
                              config, data_identity, metadata=None, compressed=True):
     """Atomically replace one checkpoint after a complete Adam/EMA update."""
-    _require(type(model) is StemgenRT58 and isinstance(config, dict)
+    _require(type(model) in (StemgenRT58, CompactSeparator) and isinstance(config, dict)
              and type(ema) is ParameterEMA and ema.updates == step, "Invalid training checkpoint objects")
     _validate_training_provenance(config, model.provenance)
     _validate_geometry_config(config, model)
@@ -352,7 +372,8 @@ def save_training_checkpoint(path, model, optimizer, ema, *, step, next_sample_i
     _validate_optimizer(model, optimizer, step)
     state = _cpu_tree(model.state_dict())
     _validate_tensors(state, model.state_dict())
-    payload = {"schema": SCHEMA, "architecture": copy.deepcopy(model.architecture_metadata),
+    schema = COMPACT_SCHEMA if type(model) is CompactSeparator else SCHEMA
+    payload = {"schema": schema, "architecture": copy.deepcopy(model.architecture_metadata),
         "parameter_names": [name for name, _ in model.named_parameters()], "model": state,
         "model_state_sha256": state_sha256(state), "provenance": _raw_provenance(model.provenance),
         "optimizer": _cpu_tree(optimizer.state_dict()), "ema": ema.state_dict(model),
@@ -370,7 +391,7 @@ def save_training_checkpoint(path, model, optimizer, ema, *, step, next_sample_i
 
 
 def _training_payload(envelope):
-    _require(isinstance(envelope, dict) and envelope.get("schema") == SCHEMA
+    _require(isinstance(envelope, dict) and envelope.get("schema") in (SCHEMA, COMPACT_SCHEMA)
              and envelope.get("codec") in (None, CODEC), "Unsupported training checkpoint schema or codec")
     _require(sys.byteorder == "little", "Checkpoint decoding requires little-endian tensors")
     payload = unpack(envelope["payload"]) if envelope["codec"] else envelope["payload"]
@@ -384,7 +405,8 @@ def _training_payload(envelope):
 
 def _training_model(payload):
     model = _new_model(payload["architecture"])
-    _require(payload["schema"] == SCHEMA, "Training schema and attention window differ")
+    expected_schema = COMPACT_SCHEMA if type(model) is CompactSeparator else SCHEMA
+    _require(payload["schema"] == expected_schema, "Training schema and architecture differ")
     _validate_geometry_config(payload["config"], model)
     _require(payload["architecture"] == model.architecture_metadata
              and payload["parameter_names"] == [name for name, _ in model.named_parameters()],
@@ -399,7 +421,7 @@ def _training_model(payload):
 
 @dataclass
 class TrainingState:
-    model: StemgenRT58
+    model: StemgenRT58 | CompactSeparator
     optimizer: torch.optim.Adam
     ema: ParameterEMA
     step: int
