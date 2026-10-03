@@ -91,8 +91,9 @@ The graph carries experimental metadata and uses its own four-state interface;
 the released plugin loader does not accept it. CPU tests check streaming
 causality, all impulse phases, detached warmup, single-output loss updates,
 exact recovery and continuous ONNX/PyTorch waveform and state agreement.
-Separation quality and M4/M4 Pro performance remain unmeasured. Full training
-is on hold during architecture exploration.
+Separation quality and M4/M4 Pro performance remain unmeasured. Quality
+evaluation requires a declared schedule and completed matched-control training;
+any promising result must pass a repeat experiment before model promotion.
 
 During training, grouped band projections fold batch and time into one matrix
 dimension before batched multiplication. Autograd then accumulates each band's
