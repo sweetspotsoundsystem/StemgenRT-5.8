@@ -104,3 +104,9 @@ named absence/preservation views, combined residual alignment and continuous
 ONNX waveform/state agreement. Candidate quality, combined listening and actual
 native M4/M4 Pro runtime must be evaluated before deployment. Current vocal
 anchor evidence is from a single seed; multi-seed repeatability is not established.
+
+The [native worker probe](../examples/native_independent/README.md) builds a
+reproducible M4/M4 Pro packet with matching training sources. It checks complete
+graphs and states, physical residual Other, exact input history and paced worker
+deadlines. Architecture probes with untrained bass/drums weights remain separate
+from final trained-model and plugin qualification.
