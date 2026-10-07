@@ -112,6 +112,12 @@ stem, leakage, and any residual stem formed from it before using the result.
 The selected source is saved in the checkpoint configuration and cannot change
 during exact resume; initialize a fresh run to change objectives.
 
+For independently designed one-output bass and drums models, use
+`model_family="specialist"` and the explicit configurations described in
+[independent stems](independent-stems.md). Their auxiliary views remove or
+isolate the named target. Their model, complete recovery and export interfaces
+are separate from the historical four-output specialization described above.
+
 ### Teacher-assisted baseline
 
 `configs/current-training.json` uses `teacher_coefficient=1.0` alongside the

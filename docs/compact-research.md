@@ -42,8 +42,9 @@ the original configuration and data identity. The compact checkpoint schema
 is distinct from the released model's schema.
 
 The released ONNX exporter and plugin runtime do not yet support this
-architecture. A successful development comparison and a repeat experiment are
-prerequisites for further deployment work.
+architecture. Development quality and measured native runtime remain necessary
+before deployment. The current bass/drums phase uses the completed first-seed
+vocal model as its anchor; the user cancelled the second vocal seed.
 
 ## Causal band candidate
 
@@ -67,7 +68,9 @@ and synthesis never use future audio or source-axis normalization.
 MAC counts exclude FFT, normalization, elementwise operations, copies and bias
 additions. Three vocal-sized networks would total 14,416,704 dense MACs per hop
 before that overhead. This is an arithmetic reference for the eventual system
-budget; bass and drums architectures have not been chosen or qualified.
+budget. Independently designed bass and drums research candidates are described
+in [independent stems](independent-stems.md), together with their matching
+training, recovery, evaluation and export code.
 
 For band training, set `model_family="banded"`, `band_width=96`,
 `band_global_width=192`, `band_layers=2`, and `precision="fp32"`. Use
@@ -91,9 +94,9 @@ The graph carries experimental metadata and uses its own four-state interface;
 the released plugin loader does not accept it. CPU tests check streaming
 causality, all impulse phases, detached warmup, single-output loss updates,
 exact recovery and continuous ONNX/PyTorch waveform and state agreement.
-Separation quality and M4/M4 Pro performance remain unmeasured. Quality
-evaluation requires a declared schedule and completed matched-control training;
-any promising result must pass a repeat experiment before model promotion.
+These checks do not measure separation quality or M4/M4 Pro performance.
+Experiment-specific quality evidence and training authorization are recorded
+with each frozen research plan, separately from this portable interface.
 
 During training, grouped band projections fold batch and time into one matrix
 dimension before batched multiplication. Autograd then accumulates each band's

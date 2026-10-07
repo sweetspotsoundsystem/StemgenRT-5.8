@@ -25,6 +25,7 @@ from .losses import grouped_update, _teacher_weight, source_index
 from .model import StemgenRT58
 from .compact import CompactSeparator, SOURCE_ORDER
 from .banded import BandSeparator
+from .specialist import SpecialistSeparator
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,8 @@ class TrainingConfig:
     band_width: int = 96
     band_global_width: int = 192
     band_layers: int = 2
+    specialist_feature_n_fft: int | None = None
+    specialist_waveform_basis: int | None = None
     target_source: str | None = None
     attention_window: int = 32
     past_filter: bool = False
@@ -64,7 +67,7 @@ class TrainingConfig:
 
     def validate(self):
         source_index(self.target_source)
-        if self.model_family not in ("released", "compact", "banded"):
+        if self.model_family not in ("released", "compact", "banded", "specialist"):
             raise ValueError("Unknown model_family")
         if (type(self.compact_hidden_size) is not int or not 16 <= self.compact_hidden_size <= 1024
                 or type(self.compact_layers) is not int or not 1 <= self.compact_layers <= 4):
@@ -78,10 +81,25 @@ class TrainingConfig:
                 or type(self.band_global_width) is not int or not 16 <= self.band_global_width <= 512
                 or type(self.band_layers) is not int or not 1 <= self.band_layers <= 4):
             raise ValueError("Invalid band backbone geometry")
-        if self.model_family != "banded" and (self.band_width, self.band_global_width, self.band_layers) != (96, 192, 2):
+        if self.model_family not in ("banded", "specialist") and (self.band_width, self.band_global_width, self.band_layers) != (96, 192, 2):
             raise ValueError("Band geometry cannot configure another model family")
-        if self.model_family == "banded" and self.precision != "fp32":
+        if self.model_family in ("banded", "specialist") and self.precision != "fp32":
             raise ValueError("Banded experiments require precision=fp32")
+        if self.model_family == "specialist":
+            if self.target_source not in ("bass", "drums") or self.teacher_coefficient != 0.:
+                raise ValueError("Specialists require bass or drums supervision without an online teacher")
+            if (self.specialist_feature_n_fft is not None and
+                    (type(self.specialist_feature_n_fft) is not int or self.specialist_feature_n_fft not in (1024, 4096))):
+                raise ValueError("Invalid specialist feature FFT")
+            if self.target_source == "drums" and self.specialist_feature_n_fft not in (None, 1024):
+                raise ValueError("Long analysis is a bass-only feature")
+            if (self.specialist_waveform_basis is not None and
+                    (type(self.specialist_waveform_basis) is not int or not 0 <= self.specialist_waveform_basis <= 512)):
+                raise ValueError("Invalid specialist waveform basis")
+            if self.target_source == "bass" and self.specialist_waveform_basis not in (None, 0):
+                raise ValueError("Waveform residual is a drums-only feature")
+        elif self.specialist_feature_n_fft is not None or self.specialist_waveform_basis is not None:
+            raise ValueError("Specialist geometry cannot configure another model family")
         if self.past_filter is not False:
             raise ValueError("The current model does not use a past filter")
         if type(self.attention_window) is not int or self.attention_window != 32:
@@ -195,9 +213,18 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     corpus = load_manifest(manifest, expected_split="train")
     root_weights = config.root_weights or corpus.root_weights
     config = replace(config, root_weights=dict(root_weights)).validate()
+    if config.model_family == "specialist":
+        config = replace(config,
+            specialist_feature_n_fft=(4096 if config.target_source == "bass" else 1024)
+                if config.specialist_feature_n_fft is None else config.specialist_feature_n_fft,
+            specialist_waveform_basis=(0 if config.target_source == "bass" else 256)
+                if config.specialist_waveform_basis is None else config.specialist_waveform_basis).validate()
     config_dict = asdict(config)
-    if config.model_family != "banded":
+    if config.model_family not in ("banded", "specialist"):
         for key in ("band_width", "band_global_width", "band_layers"):
+            config_dict.pop(key)
+    if config.model_family != "specialist":
+        for key in ("specialist_feature_n_fft", "specialist_waveform_basis"):
             config_dict.pop(key)
     if config.model_family != "compact":
         for key in ("compact_hidden_size", "compact_layers"):
@@ -255,9 +282,13 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         elif config.model_family == "banded":
             model = BandSeparator(sources=("vocals",) if config.target_source == "vocals" else SOURCE_ORDER,
                 band_width=config.band_width, global_width=config.band_global_width, layers=config.band_layers)
+        elif config.model_family == "specialist":
+            model = SpecialistSeparator(source=config.target_source, band_width=config.band_width,
+                global_width=config.band_global_width, layers=config.band_layers,
+                feature_n_fft=config.specialist_feature_n_fft, waveform_basis=config.specialist_waveform_basis)
         else:
             model = StemgenRT58()
-        if type(model) in (CompactSeparator, BandSeparator):
+        if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
             model.provenance.update(parent_training_updates=model.provenance.get("training_updates", 0),
                                     current_stage_updates=0)
         model.to(device).train().requires_grad_(True)
@@ -339,7 +370,7 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     target_source=config.target_source, **teacher_options)
                 del teacher_options
                 step += 1
-                if type(model) in (CompactSeparator, BandSeparator):
+                if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
                     model.provenance.update(current_stage_updates=step,
                         training_updates=model.provenance["parent_training_updates"] + step)
                 if any(not torch.equal(tensor, fixed[name]) for name, tensor in model.named_buffers()):

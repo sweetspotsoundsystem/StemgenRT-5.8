@@ -293,7 +293,7 @@ class Groups:
     auxiliary: BatchReduction
 
 
-def source_views(mixture, targets):
+def source_views(mixture, targets, *, target_source="vocals"):
     """Derive additional full-context inputs after ordinary augmentation.
 
 Call on the entire warmup-plus-scored crop. Every view needs freshly computed
@@ -307,9 +307,13 @@ from the corresponding ordinary mixture. Inputs are never modified in place.
         raise ValueError("Require sixteen fixed FP32 augmented stereo mixtures and references")
     if not bool(torch.isfinite(targets).all()) or not bool(torch.isfinite(mixture).all()):
         raise ValueError("Nonfinite source-view inputs")
+    index = source_index(target_source)
+    _require(index is not None, "Source views require one named target")
     selected = targets[list(VIEW_INDICES)].clone()
-    keep = torch.tensor([[True, True, False, True], [False, False, True, False]],
-                        dtype=torch.bool, device=targets.device)
+    keep = torch.ones(2, 4, dtype=torch.bool, device=targets.device)
+    keep[0, index] = False
+    keep[1] = False
+    keep[1, index] = True
     selected *= keep[:, :, None, None]
     return selected.sum(1), selected
 
@@ -348,8 +352,10 @@ def auxiliary_objective(raw, deployed, targets, mixture, *, weights=VIEW_WEIGHTS
     if raw.shape[1] == 1:
         _require(target_source is None and torch.count_nonzero(targets[0, 0]).item() == 0
                  and torch.equal(targets[1, 0], mixture[1]),
-                 "Single-vocal source-view targets differ from instrumental/vocals-only inputs")
+                 "Single-source targets differ from target-absent/target-only inputs")
     else:
+        # The historical four-output objective keeps its original vocal views,
+        # even when its ordinary loss is restricted to bass or drums.
         _require(torch.count_nonzero(targets[0, 2]).item() == 0
                 and torch.count_nonzero(targets[1, [0, 1, 3]]).item() == 0,
                 "Source-view target ordering or removed stems changed")
@@ -370,7 +376,8 @@ def _teacher_weight(value):
     return value
 
 
-def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None):
+def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None,
+           auxiliary_target_source=None):
     source_index(target_source)
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
@@ -400,6 +407,12 @@ def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., targ
             loss="Selected-source waveform, complex-STFT, raw anchors, SDR, absence and optional teacher terms",
             source_reduction="One selected source; retain complete-group example and window denominators",
             auxiliary_source_selection="Select the same output on original instrumental/vocals-only inputs")
+        if auxiliary_target_source is not None:
+            _require(auxiliary_target_source == target_source and target_source in ("bass", "drums"),
+                     "Specialist auxiliary source must match its training target")
+            result.update(version="target-source-grouped-update-v1",
+                auxiliary_source_selection="Remove the selected source in view 0; retain only it in view 1",
+                auxiliary_target_source=target_source)
     return result
 
 
@@ -507,9 +520,10 @@ def model_targets(model, targets, target_source):
     _require(targets.ndim == 4 and targets.shape[1:3] == (4, 2), "Require DBVO input references")
     if order == SOURCE_NAMES:
         return targets, target_source
-    _require(order == ("vocals",) and target_source == "vocals",
+    _require(target_source in SOURCE_NAMES and order == (target_source,),
              "Model output sources disagree with the selected training target")
-    return targets[:, 2:3], None
+    index = source_index(target_source)
+    return targets[:, index:index + 1], None
 
 
 def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordinary_microbatch=4,
@@ -517,7 +531,9 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
                       verify_input_gradients=False, progress=None, extra_ordinary_primary_sdr_weight=0.,
                       teacher_coefficient=0., teacher_targets=None, target_source=None):
     teacher = _teacher_weight(teacher_coefficient)
-    auxiliary_mix, auxiliary_targets = source_views(mixture_cpu, targets_cpu)
+    single_source = tuple(model.architecture_metadata["source_order"]) == (target_source,)
+    auxiliary_mix, auxiliary_targets = source_views(mixture_cpu, targets_cpu,
+                                                    target_source=target_source if single_source else "vocals")
     device = next(model.parameters()).device
     inputs = {"ordinary": (mixture_cpu.to(device), targets_cpu.to(device)),
               "auxiliary": (auxiliary_mix.to(device), auxiliary_targets.to(device))}
@@ -593,8 +609,11 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     _require(ema.updates == step and len(optimizer.state) == model.parameter_tensor_count
             and all(state["step"].item() == step for state in optimizer.state.values()),
             "Grouped update advanced Adam or EMA incorrectly")
+    auxiliary_source = (target_source if target_source in ("bass", "drums")
+                       and tuple(model.architecture_metadata["source_order"]) == (target_source,) else None)
     return {"step": step, "accumulation_policy": policy(extra_ordinary_primary_sdr_weight=extra,
-            teacher_coefficient=teacher, target_source=target_source), "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
+            teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source),
+            "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
             "gradient_norm_before_clip": float(norm), "parameter_gradient_norms": gradient_norms, **endpoint}
 
 

@@ -16,7 +16,10 @@ class GroupedAffine(nn.Module):
         require(all(m.in_features == self.in_features and m.out_features == self.out_features
                     for m in linears), "Grouped maps must have matching dimensions")
         self.weight = nn.Parameter(torch.stack([m.weight.detach() for m in linears]))
-        self.bias = nn.Parameter(torch.stack([m.bias.detach() for m in linears]))
+        require(all((m.bias is None) == (linears[0].bias is None) for m in linears),
+                "Grouped maps must share the bias policy")
+        self.bias = (None if linears[0].bias is None else
+                     nn.Parameter(torch.stack([m.bias.detach() for m in linears])))
 
     def forward(self, values):
         if self.training:
@@ -27,9 +30,11 @@ class GroupedAffine(nn.Module):
             grouped = values.movedim(-2, 0).flatten(1, -2)
             result = torch.bmm(grouped, self.weight.transpose(-2, -1))
             shape = (self.weight.shape[0], *values.shape[:-2], self.out_features)
-            return result.reshape(shape).movedim(0, -2) + self.bias
+            result = result.reshape(shape).movedim(0, -2)
+            return result if self.bias is None else result + self.bias
         # Preserve the established one-hop evaluation/export graph exactly.
-        return torch.matmul(values.unsqueeze(-2), self.weight.transpose(-2, -1)).squeeze(-2) + self.bias
+        result = torch.matmul(values.unsqueeze(-2), self.weight.transpose(-2, -1)).squeeze(-2)
+        return result if self.bias is None else result + self.bias
 
 
 class CausalBandBackbone(nn.Module):
@@ -39,13 +44,16 @@ class CausalBandBackbone(nn.Module):
     partition the existing FFT bins; they do not add frequency resolution.
     Outputs are independent complex masks, with no source-axis normalization.
     """
-    def __init__(self, *, sources=1, band_width=96, global_width=192, layers=2):
+    def __init__(self, *, sources=1, band_width=96, global_width=192, layers=2, edges=BAND_EDGES):
         super().__init__()
         require(type(sources) is int and sources in (1, 4), "Expected one or four outputs")
         require(type(band_width) is int and 16 <= band_width <= 256
                 and type(global_width) is int and 16 <= global_width <= 512
                 and type(layers) is int and 1 <= layers <= 4, "Invalid band backbone geometry")
-        self.edges, self.band_count = BAND_EDGES, len(BAND_EDGES) - 1
+        require(isinstance(edges, (tuple, list)) and len(edges) >= 2
+                and all(type(v) is int for v in edges) and edges[0] == 0 and edges[-1] == 513
+                and all(a < b for a, b in zip(edges, edges[1:])), "Invalid carrier band edges")
+        self.edges, self.band_count = tuple(edges), len(edges) - 1
         self.sources, self.width, self.global_width, self.layers = sources, band_width, global_width, layers
         encoders = [nn.Linear(6 * (r - l), band_width) for l, r in zip(self.edges, self.edges[1:])]
         self.band_identity = nn.Parameter(torch.zeros(self.band_count, band_width))
@@ -82,7 +90,7 @@ class CausalBandBackbone(nn.Module):
         self.mask_hidden = GroupedAffine(hidden)
         self.mask_heads = nn.ModuleList(GroupedAffine(heads[first:last]) for first, last, _ in self.groups)
 
-    def forward(self, features, local_hidden, global_hidden):
+    def encode_features(self, features):
         # [batch, frames, stereo, frequency bins, real/imag/log magnitude]
         batch, frames = features.shape[:2]
         values = []
@@ -90,7 +98,11 @@ class CausalBandBackbone(nn.Module):
             chunk = features[..., self.edges[first]:self.edges[last], :]
             chunk = chunk.reshape(batch, frames, 2, last - first, width, 3)
             values.append(module(chunk.permute(0, 1, 3, 2, 4, 5).flatten(3)))
-        bands = self.input_norm(F.silu(torch.cat(values, dim=2)) + self.band_identity)
+        return torch.cat(values, dim=2)
+
+    def temporal_context(self, encoded, local_hidden, global_hidden):
+        batch, frames = encoded.shape[:2]
+        bands = self.input_norm(F.silu(encoded) + self.band_identity)
         locals_out, globals_out = [], []
         for index in range(self.layers):
             values = bands.permute(0, 2, 1, 3).reshape(batch * self.band_count, frames, self.width)
@@ -103,13 +115,22 @@ class CausalBandBackbone(nn.Module):
             bands = bands + self.global_out[index](shared).reshape(batch, frames, self.band_count, self.width)
             locals_out.append(local_state)
             globals_out.append(global_state)
+        return bands, torch.cat(locals_out), torch.cat(globals_out), shared
+
+    def decode_masks(self, bands):
+        batch, frames = bands.shape[:2]
         hidden = F.silu(self.mask_hidden(bands))
         masks = []
         for module, (first, last, width) in zip(self.mask_heads, self.groups):
             value = module(hidden[:, :, first:last])
             value = value.reshape(batch, frames, last - first, self.sources, 2, width, 2)
             masks.append(value.permute(0, 1, 3, 4, 2, 5, 6).flatten(4, 5))
-        return torch.cat(masks, dim=4), torch.cat(locals_out), torch.cat(globals_out)
+        return torch.cat(masks, dim=4)
+
+    def forward(self, features, local_hidden, global_hidden):
+        bands, local, glob, _ = self.temporal_context(
+            self.encode_features(features), local_hidden, global_hidden)
+        return self.decode_masks(bands), local, glob
 
     def dense_macs(self):
         band, glob, count, layers = self.width, self.global_width, self.band_count, self.layers

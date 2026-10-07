@@ -391,7 +391,8 @@ def render_scored_context(model, mixture, *, warmup_samples, carry_state):
     """Warm all recurrent states without gradients, then return aligned scored audio."""
     from .compact import CompactSeparator
     from .banded import BandSeparator
-    if type(model) in (CompactSeparator, BandSeparator):
+    from .specialist import SpecialistSeparator
+    if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
         return model.render_scored_context(mixture, warmup_samples=warmup_samples, carry_state=carry_state)
     require(carry_state is True and type(warmup_samples) is int and warmup_samples > 0
             and warmup_samples % 128 == 0 and mixture.ndim == 3 and mixture.shape[1] == 2
