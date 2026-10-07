@@ -102,5 +102,5 @@ CPU checks cover future independence, all 128 impulse phases, grouped/literal
 streaming, detached warmup, finite gradients, exact checkpoint continuation,
 named absence/preservation views, combined residual alignment and continuous
 ONNX waveform/state agreement. Candidate quality, combined listening and actual
-native M4/M4 Pro runtime must be evaluated before deployment. The user cancelled
-the second vocal seed; current vocal evidence remains a single-seed result.
+native M4/M4 Pro runtime must be evaluated before deployment. Current vocal
+anchor evidence is from a single seed; multi-seed repeatability is not established.

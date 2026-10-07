@@ -44,7 +44,7 @@ is distinct from the released model's schema.
 The released ONNX exporter and plugin runtime do not yet support this
 architecture. Development quality and measured native runtime remain necessary
 before deployment. The current bass/drums phase uses the completed first-seed
-vocal model as its anchor; the user cancelled the second vocal seed.
+vocal model as its fixed anchor. Multi-seed repeatability is not established.
 
 ## Causal band candidate
 

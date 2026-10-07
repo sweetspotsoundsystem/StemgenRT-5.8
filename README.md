@@ -91,8 +91,15 @@ its SHA-256 or explicitly start from scratch.
 | `stemgenrt.export` | Current fixed-geometry ONNX export |
 | `stemgenrt.streaming` | Released and checksum-pinned custom ONNX inference |
 
-`StemgenRT58` supports the current eight-state architecture. Earlier models,
-experimental variants and draft papers remain in git history.
+`StemgenRT58` supports the current eight-state architecture. The repository also
+includes independent single-output research models with separate state and
+checkpoint interfaces: [causal vocal models](docs/compact-research.md) and
+[independent bass/drums specialists](docs/independent-stems.md). Their matching
+training, source-specific objectives, complete recovery, combined evaluation
+and FP32 export are included. Candidate quality and measured native M4/M4 Pro
+runtime remain required before deployment.
+
+Earlier released architectures and draft papers remain in git history.
 
 The implementation builds on [HS-TasNet](https://arxiv.org/abs/2402.17701) and
 [Phil Wang's implementation](https://github.com/lucidrains/hs-tasnet).
