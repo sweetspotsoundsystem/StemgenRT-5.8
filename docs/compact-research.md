@@ -98,6 +98,9 @@ These checks do not measure separation quality or M4/M4 Pro performance.
 Experiment-specific quality evidence and training authorization are recorded
 with each frozen research plan, separately from this portable interface.
 
+See [joint model training, export and listening](joint-model.md) for the exact
+joint training configuration and the complete four-output ONNX file runner.
+
 During training, grouped band projections fold batch and time into one matrix
 dimension before batched multiplication. Autograd then accumulates each band's
 weight gradient directly, avoiding a separate weight matrix for every frame.
