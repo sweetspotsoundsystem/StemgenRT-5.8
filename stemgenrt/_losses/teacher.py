@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import torch
 
-from ..losses import BatchReduction, WINDOW, ACTIVITY_POWER
+from ..losses import BatchReduction, WINDOW, ACTIVITY_POWER, eligible_source_mean
 
 VERSION = "prospective-ordinary-gt-active-relative-teacher-l1-v1"
 
@@ -19,7 +19,7 @@ class TeacherTerm:
     active_window_counts: torch.Tensor
 
 
-def contribution(deployed, teacher_targets, targets, mixture, reduction):
+def contribution(deployed, teacher_targets, targets, mixture, reduction, *, target_source=None):
     """Sum microbatch contributions using full logical-batch GT denominators.
 
 Teacher audio is a fixed FP32 constant with physical alignment and source order
@@ -54,7 +54,7 @@ teacher silence or leakage cannot change the support of the term.
         scale = torch.maximum(power.sqrt(), .1 * physical.square().mean((1, 3)).sqrt()[:, None]).clamp_min(1e-3)
         distance = (estimate - teacher).abs().mean((2, 4)) / scale
         per_stem = torch.where(active, distance, 0).sum((0, 2)) / reduction.active.clamp_min(1)
-        total = per_stem.sum() / (reduction.active > 0).sum().clamp_min(1)
+        total = eligible_source_mean(per_stem, reduction.active, target_source)
     if not bool(torch.isfinite(total)):
         raise FloatingPointError("Nonfinite teacher contribution")
     return TeacherTerm(total, per_stem, active_counts)

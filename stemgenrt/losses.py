@@ -23,12 +23,35 @@ VIEW_INDICES = (14, 15)
 VIEW_NAMES = ("instrumental", "vocals_only")
 VIEW_WEIGHTS = (1., .25)
 VERSION = "whole-group-wave-spectral-sdr-weighted-source-views-v1"
+SOURCE_NAMES = ("drums", "bass", "vocals", "other")
 
 
 def _require(condition, message):
     if not condition:
         raise ValueError(message)
 
+
+def source_index(target_source):
+    """None retains joint training; a source name selects every loss component."""
+    if target_source is None:
+        return None
+    if not isinstance(target_source, str) or target_source not in SOURCE_NAMES:
+        raise ValueError("target_source must be None or a supported source name")
+    return SOURCE_NAMES.index(target_source)
+
+
+def source_mean(values, target_source, *, dim=1):
+    index = source_index(target_source)
+    return values.mean() if index is None else values.select(dim, index).mean()
+
+
+def eligible_source_mean(values, counts, target_source):
+    index = source_index(target_source)
+    if index is None:
+        return values.sum() / (counts > 0).sum().clamp_min(1)
+    # Per-source values already use clamped active/absent denominators. No
+    # eligible windows means zero contribution, not an extra division by four.
+    return values[index]
 
 
 @dataclass(frozen=True)
@@ -42,7 +65,7 @@ class DirectSDRLoss:
     absent_window_counts: torch.Tensor
 
 
-def direct_sdr(raw, deployed, targets, mixture):
+def direct_sdr(raw, deployed, targets, mixture, *, target_source=None):
     """Use full one-second windows and the evaluation's fixed activity rule.
 
 The main loss is negative scale-dependent SDR in dB, with equal stem weight.
@@ -51,12 +74,14 @@ L1 term also anchors the pre-residual heads, including the learned Other head.
 All coefficients affect training only. No teacher or fitted gain is used.
 """
     if (raw.ndim != 4 or raw.shape != deployed.shape or raw.shape != targets.shape
-            or raw.shape[1:3] != (4, 2) or raw.shape[-1] < WINDOW
+            or raw.shape[1:3] not in ((1, 2), (4, 2)) or raw.shape[-1] < WINDOW
             or mixture.shape != (raw.shape[0], 2, raw.shape[-1])
             or any(v.dtype != torch.float32 or v.device != raw.device
                    for v in (raw, deployed, targets, mixture))
             or targets.requires_grad or mixture.requires_grad):
-        raise ValueError("Require aligned FP32 raw/deployed/truth [B,4,2,T] and fixed physical mixture")
+        raise ValueError("Require aligned FP32 raw/deployed/truth [B,S,2,T] and fixed physical mixture")
+    if raw.shape[1] == 1 and target_source is not None:
+        raise ValueError("Single-output tensors are already source-selected; use target_source=None")
     windows = raw.shape[-1] // WINDOW
     with torch.autocast(raw.device.type, enabled=False):
         reference = targets[..., :windows * WINDOW].unflatten(-1, (windows, WINDOW))
@@ -69,15 +94,15 @@ All coefficients affect training only. No teacher or fitted gain is used.
         values = (10 * torch.log10((error + 1e-12) / (signal + 1e-12))).clamp(-60, 60)
         active_counts = active.sum(dim=(0, 2))
         per_stem = torch.where(active, values, 0).sum(dim=(0, 2)) / active_counts.clamp_min(1)
-        primary = per_stem.sum() / (active_counts > 0).sum().clamp_min(1)
+        primary = eligible_source_mean(per_stem, active_counts, target_source)
         mixture_power = physical.square().mean(dim=(1, 3))
         leakage = estimate.square().mean(dim=(2, 4))
         absent_counts = (~active).sum(dim=(0, 2))
         absence_values = 10 * torch.log10(1 + leakage / mixture_power[:, None].clamp_min(ACTIVITY_POWER))
         absence_per_stem = torch.where(~active, absence_values, 0).sum(dim=(0, 2)) / absent_counts.clamp_min(1)
-        absence = absence_per_stem.sum() / (absent_counts > 0).sum().clamp_min(1)
+        absence = eligible_source_mean(absence_per_stem, absent_counts, target_source)
         scale = torch.maximum(signal / (2 * WINDOW), .01 * mixture_power[:, None]).clamp_min(ACTIVITY_POWER).sqrt()
-        anchor = ((raw_windows - reference).abs().mean(dim=(2, 4)) / scale).mean()
+        anchor = source_mean((raw_windows - reference).abs().mean(dim=(2, 4)) / scale, target_source)
         total = primary + ABSENCE_WEIGHT * absence + ANCHOR_WEIGHT * anchor
     if not bool(torch.isfinite(total)):
         raise FloatingPointError("Nonfinite direct SDR objective")
@@ -96,9 +121,11 @@ class ReconstructionLoss:
     absent_window_counts: torch.Tensor
 
 
-def reconstruction(raw, deployed, targets, mixture):
-    if raw.shape != deployed.shape or raw.shape != targets.shape or raw.ndim != 4 or raw.shape[1:3] != (4, 2):
-        raise ValueError("Require aligned four-stem stereo estimates and references")
+def reconstruction(raw, deployed, targets, mixture, *, target_source=None):
+    if raw.shape != deployed.shape or raw.shape != targets.shape or raw.ndim != 4 or raw.shape[1:3] not in ((1, 2), (4, 2)):
+        raise ValueError("Require aligned one- or four-stem stereo estimates and references")
+    if raw.shape[1] == 1 and target_source is not None:
+        raise ValueError("Single-output tensors are already source-selected; use target_source=None")
     if mixture.shape != (raw.shape[0], 2, raw.shape[-1]) or raw.shape[-1] < 44100:
         raise ValueError("Require an aligned physical mixture and at least one scored second")
     if any(t.dtype != torch.float32 or t.device != raw.device for t in (raw, deployed, targets, mixture)):
@@ -109,8 +136,8 @@ def reconstruction(raw, deployed, targets, mixture):
         reference_rms = targets.square().mean((2, 3)).sqrt()
         mixture_rms = mixture.square().mean((1, 2)).sqrt()
         scale = torch.maximum(reference_rms, .1 * mixture_rms[:, None]).clamp_min(1e-3)
-        waveform = ((deployed - targets).abs().mean((2, 3)) / scale).mean()
-        raw_anchor = ((raw - targets).abs().mean((2, 3)) / scale).mean()
+        waveform = source_mean((deployed - targets).abs().mean((2, 3)) / scale, target_source)
+        raw_anchor = source_mean((raw - targets).abs().mean((2, 3)) / scale, target_source)
         components = []
         for size in FFT_SIZES:
             window = torch.hann_window(size, device=raw.device, dtype=torch.float32)
@@ -124,11 +151,12 @@ def reconstruction(raw, deployed, targets, mixture):
             # channels, bins and frames independently for each sample and stem.
             denominator = torch.maximum(reference.abs().mean((2, 3, 4)),
                 .1 * physical.abs().mean((1, 2, 3))[:, None]).clamp_min(1e-3)
-            components.append(((estimate - reference).abs().mean((2, 3, 4)) / denominator).mean())
+            components.append(source_mean((estimate - reference).abs().mean((2, 3, 4)) / denominator,
+                                          target_source))
         spectral = torch.stack(components).mean()
         total = waveform + .25 * spectral + .25 * raw_anchor
         with torch.no_grad():
-            metric = direct_sdr(raw, deployed, targets, mixture)
+            metric = direct_sdr(raw, deployed, targets, mixture, target_source=target_source)
     if not bool(torch.isfinite(total)):
         raise FloatingPointError("Nonfinite waveform/spectral loss")
     return ReconstructionLoss(total, waveform, spectral, raw_anchor, metric.negative_sdr_db,
@@ -157,7 +185,7 @@ def _extra_primary_weight(value):
     return float(value)
 
 
-def objective(raw, deployed, targets, mixture, *, extra_ordinary_primary_sdr_weight=0.):
+def objective(raw, deployed, targets, mixture, *, extra_ordinary_primary_sdr_weight=0., target_source=None):
     """Both summands carry gradients; the coefficient is fixed before training.
 
     Reconstruction is wave L1 + .25 complex-STFT + .25 raw-head L1.
@@ -167,8 +195,8 @@ def objective(raw, deployed, targets, mixture, *, extra_ordinary_primary_sdr_wei
     raw-anchor coefficients and the auxiliary objective retain their weights.
     """
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
-    base = reconstruction(raw, deployed, targets, mixture)
-    direct = direct_sdr(raw, deployed, targets, mixture)
+    base = reconstruction(raw, deployed, targets, mixture, target_source=target_source)
+    direct = direct_sdr(raw, deployed, targets, mixture, target_source=target_source)
     total = base.total + SDR_WEIGHT * direct.total
     if extra:
         total = total + extra * direct.negative_sdr_db
@@ -190,9 +218,9 @@ class BatchReduction:
 
 
 def activity_counts(targets):
-    if (targets.ndim != 4 or targets.shape[0] < 1 or targets.shape[1:3] != (4, 2)
+    if (targets.ndim != 4 or targets.shape[0] < 1 or targets.shape[1:3] not in ((1, 2), (4, 2))
             or targets.shape[-1] < WINDOW or targets.dtype != torch.float32 or targets.requires_grad):
-        raise ValueError("Require fixed FP32 four-stem stereo references")
+        raise ValueError("Require fixed FP32 one- or four-stem stereo references")
     windows = targets.shape[-1] // WINDOW
     with torch.no_grad(), torch.autocast(targets.device.type, enabled=False):
         reference = targets[..., :windows * WINDOW].unflatten(-1, (windows, WINDOW))
@@ -206,7 +234,7 @@ def prepare_reduction(targets):
     return BatchReduction(targets.shape[0], targets.shape[-1], active, absent)
 
 
-def contribution(raw, deployed, targets, mixture, reduction):
+def contribution(raw, deployed, targets, mixture, reduction, *, target_source=None):
     """Return this microbatch's contribution; sum contributions before Adam.
 
 The reduction is computed on the training device from every reference in the
@@ -215,18 +243,18 @@ division by the number of microbatches.
 """
     if (not isinstance(reduction, BatchReduction) or raw.ndim != 4
             or raw.shape != deployed.shape or raw.shape != targets.shape
-            or raw.shape[1:3] != (4, 2) or not 0 < raw.shape[0] <= reduction.examples
+            or raw.shape[1:3] not in ((1, 2), (4, 2)) or not 0 < raw.shape[0] <= reduction.examples
             or raw.shape[-1] != reduction.samples or reduction.samples < WINDOW
             or mixture.shape != (raw.shape[0], 2, raw.shape[-1])
             or any(v.dtype != torch.float32 or v.device != raw.device for v in (raw, deployed, targets, mixture))
             or targets.requires_grad or mixture.requires_grad
-            or any(v.shape != (4,) or v.dtype != torch.int64 or v.device != raw.device
+            or any(v.shape != (raw.shape[1],) or v.dtype != torch.int64 or v.device != raw.device
                    or v.requires_grad or bool((v < 0).any()) for v in (reduction.active, reduction.absent))
             or not bool(torch.all(reduction.active + reduction.absent ==
                                   reduction.examples * (reduction.samples // WINDOW)))):
         raise ValueError("Require matching microbatch audio and whole-batch activity counts")
     fraction = raw.shape[0] / reduction.examples
-    base = reconstruction(raw, deployed, targets, mixture)
+    base = reconstruction(raw, deployed, targets, mixture, target_source=target_source)
     windows = raw.shape[-1] // WINDOW
     with torch.autocast(raw.device.type, enabled=False):
         reference = targets[..., :windows * WINDOW].unflatten(-1, (windows, WINDOW))
@@ -241,14 +269,14 @@ division by the number of microbatches.
             raise ValueError("Microbatch activity exceeds the declared logical batch")
         values = (10 * torch.log10((error + 1e-12) / (signal + 1e-12))).clamp(-60, 60)
         per_stem = torch.where(active, values, 0).sum((0, 2)) / reduction.active.clamp_min(1)
-        primary = per_stem.sum() / (reduction.active > 0).sum().clamp_min(1)
+        primary = eligible_source_mean(per_stem, reduction.active, target_source)
         mixture_power = physical.square().mean((1, 3))
         leakage = estimate.square().mean((2, 4))
         absence_values = 10 * torch.log10(1 + leakage / mixture_power[:, None].clamp_min(ACTIVITY_POWER))
         absence_per_stem = torch.where(~active, absence_values, 0).sum((0, 2)) / reduction.absent.clamp_min(1)
-        absence = absence_per_stem.sum() / (reduction.absent > 0).sum().clamp_min(1)
+        absence = eligible_source_mean(absence_per_stem, reduction.absent, target_source)
         scale = torch.maximum(signal / (2 * WINDOW), .01 * mixture_power[:, None]).clamp_min(ACTIVITY_POWER).sqrt()
-        anchor = ((raw_windows - reference).abs().mean((2, 4)) / scale).mean() * fraction
+        anchor = source_mean((raw_windows - reference).abs().mean((2, 4)) / scale, target_source) * fraction
         direct = primary + ABSENCE_WEIGHT * absence + ANCHOR_WEIGHT * anchor
         reconstruction_loss = base.total * fraction
         total = reconstruction_loss + SDR_WEIGHT * direct
@@ -265,7 +293,7 @@ class Groups:
     auxiliary: BatchReduction
 
 
-def source_views(mixture, targets):
+def source_views(mixture, targets, *, target_source="vocals"):
     """Derive additional full-context inputs after ordinary augmentation.
 
 Call on the entire warmup-plus-scored crop. Every view needs freshly computed
@@ -279,9 +307,13 @@ from the corresponding ordinary mixture. Inputs are never modified in place.
         raise ValueError("Require sixteen fixed FP32 augmented stereo mixtures and references")
     if not bool(torch.isfinite(targets).all()) or not bool(torch.isfinite(mixture).all()):
         raise ValueError("Nonfinite source-view inputs")
+    index = source_index(target_source)
+    _require(index is not None, "Source views require one named target")
     selected = targets[list(VIEW_INDICES)].clone()
-    keep = torch.tensor([[True, True, False, True], [False, False, True, False]],
-                        dtype=torch.bool, device=targets.device)
+    keep = torch.ones(2, 4, dtype=torch.bool, device=targets.device)
+    keep[0, index] = False
+    keep[1] = False
+    keep[1, index] = True
     selected *= keep[:, :, None, None]
     return selected.sum(1), selected
 
@@ -303,7 +335,7 @@ class WeightedAuxiliaryLoss:
     weighted_view_contributions: torch.Tensor
 
 
-def auxiliary_objective(raw, deployed, targets, mixture, *, weights=VIEW_WEIGHTS):
+def auxiliary_objective(raw, deployed, targets, mixture, *, weights=VIEW_WEIGHTS, target_source=None):
     """Weight the two complete-group contributions without changing counts.
 
     Reconstruction keeps its original example denominator of two. Direct SDR
@@ -312,16 +344,24 @@ def auxiliary_objective(raw, deployed, targets, mixture, *, weights=VIEW_WEIGHTS
     Explicit weights support CPU controls; production uses the fixed default.
     """
     _require(raw.ndim == 4 and raw.shape == deployed.shape == targets.shape
-            and raw.shape[:3] == (2, 4, 2) and mixture.shape == (2, 2, raw.shape[-1])
+            and raw.shape[:3] in ((2, 1, 2), (2, 4, 2)) and mixture.shape == (2, 2, raw.shape[-1])
             and type(weights) is tuple and len(weights) == 2
             and all(type(w) is float and math.isfinite(w) for w in weights)
             and weights[0] == 1. and 0 <= weights[1] <= 1.,
             "Require exactly the ordered source-view pair and valid fixed view weights")
-    _require(torch.count_nonzero(targets[0, 2]).item() == 0
-            and torch.count_nonzero(targets[1, [0, 1, 3]]).item() == 0,
-            "Source-view target ordering or removed stems changed")
+    if raw.shape[1] == 1:
+        _require(target_source is None and torch.count_nonzero(targets[0, 0]).item() == 0
+                 and torch.equal(targets[1, 0], mixture[1]),
+                 "Single-source targets differ from target-absent/target-only inputs")
+    else:
+        # The historical four-output objective keeps its original vocal views,
+        # even when its ordinary loss is restricted to bass or drums.
+        _require(torch.count_nonzero(targets[0, 2]).item() == 0
+                and torch.count_nonzero(targets[1, [0, 1, 3]]).item() == 0,
+                "Source-view target ordering or removed stems changed")
     reduction = prepare_reduction(targets)
-    terms = [contribution(raw[i:i + 1], deployed[i:i + 1], targets[i:i + 1], mixture[i:i + 1], reduction)
+    terms = [contribution(raw[i:i + 1], deployed[i:i + 1], targets[i:i + 1], mixture[i:i + 1], reduction,
+                          target_source=target_source)
              for i in (0, 1)]
     unweighted = torch.stack([term.total for term in terms])
     weighted = unweighted * unweighted.new_tensor(weights)
@@ -336,7 +376,9 @@ def _teacher_weight(value):
     return value
 
 
-def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0.):
+def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None,
+           auxiliary_target_source=None):
+    source_index(target_source)
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
     result = {"version": VERSION, "loss": "Unchanged ordinary16 plus 0.1 joint source-view2 with view multipliers [1,0.25]",
@@ -359,16 +401,32 @@ def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0.):
             teacher_coefficient=teacher, teacher_term=teacher_policy(),
             teacher_targets="Caller supplies complete ordinary-group detached FP32 scored targets",
             teacher_auxiliary_weight=0., production_recipe_selected=False)
+    if target_source is not None:
+        result.update(parent_objective_version=result["version"], version="single-source-grouped-update-v1",
+            target_source=target_source,
+            loss="Selected-source waveform, complex-STFT, raw anchors, SDR, absence and optional teacher terms",
+            source_reduction="One selected source; retain complete-group example and window denominators",
+            auxiliary_source_selection="Select the same output on original instrumental/vocals-only inputs")
+        if auxiliary_target_source is not None:
+            _require(auxiliary_target_source == target_source and target_source in ("bass", "drums"),
+                     "Specialist auxiliary source must match its training target")
+            result.update(version="target-source-grouped-update-v1",
+                auxiliary_source_selection="Remove the selected source in view 0; retain only it in view 1",
+                auxiliary_target_source=target_source)
     return result
 
 
 def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_samples,
                      check_continue=None, verify_input_gradients=False, progress=None,
-                     extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None):
+                     extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None,
+                     target_source=None):
     from .model import render_scored_context
 
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
+    targets, loss_target_source = model_targets(model, targets, target_source)
+    if targets.shape[1] == 1 and teacher:
+        raise ValueError("Single-output experiment has no online teacher")
     if teacher:
         if group != "ordinary":
             raise ValueError("Teacher supervision is ordinary-only")
@@ -400,14 +458,15 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
     del captured
     loss_function = objective if group == "ordinary" else auxiliary_objective
     ordinary_options = {"extra_ordinary_primary_sdr_weight": extra} if group == "ordinary" else {}
-    terms = loss_function(raw, deployed, targets[..., warmup_samples:], mixture[..., warmup_samples:], **ordinary_options)
+    terms = loss_function(raw, deployed, targets[..., warmup_samples:], mixture[..., warmup_samples:],
+                          target_source=loss_target_source, **ordinary_options)
     value = terms.total if group == "ordinary" else AUXILIARY_WEIGHT * terms.total
     details = {}
     if teacher:
         from ._losses.teacher import contribution as teacher_contribution
         reference = targets[..., warmup_samples:]
         term = teacher_contribution(deployed, teacher_targets, reference, mixture[..., warmup_samples:],
-                                    prepare_reduction(reference))
+                                    prepare_reduction(reference), target_source=loss_target_source)
         value = terms.total + teacher * term.total
         if not bool(torch.isfinite(value)):
             raise FloatingPointError("Nonfinite combined ordinary teacher loss")
@@ -451,16 +510,35 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
             "whole_group_objective_evaluations": 1, **details}
 
 
+def model_targets(model, targets, target_source):
+    """Map fixed DBVO references to the model's actual outputs, without padding.
+
+    Source views are constructed before this selection so their input mixtures
+    still contain the intended instrumental or vocals-only audio.
+    """
+    order = tuple(model.architecture_metadata["source_order"])
+    _require(targets.ndim == 4 and targets.shape[1:3] == (4, 2), "Require DBVO input references")
+    if order == SOURCE_NAMES:
+        return targets, target_source
+    _require(target_source in SOURCE_NAMES and order == (target_source,),
+             "Model output sources disagree with the selected training target")
+    index = source_index(target_source)
+    return targets[:, index:index + 1], None
+
+
 def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordinary_microbatch=4,
                       auxiliary_microbatch=2, check_continue=None, after_group=None,
                       verify_input_gradients=False, progress=None, extra_ordinary_primary_sdr_weight=0.,
-                      teacher_coefficient=0., teacher_targets=None):
+                      teacher_coefficient=0., teacher_targets=None, target_source=None):
     teacher = _teacher_weight(teacher_coefficient)
-    auxiliary_mix, auxiliary_targets = source_views(mixture_cpu, targets_cpu)
+    single_source = tuple(model.architecture_metadata["source_order"]) == (target_source,)
+    auxiliary_mix, auxiliary_targets = source_views(mixture_cpu, targets_cpu,
+                                                    target_source=target_source if single_source else "vocals")
     device = next(model.parameters()).device
     inputs = {"ordinary": (mixture_cpu.to(device), targets_cpu.to(device)),
               "auxiliary": (auxiliary_mix.to(device), auxiliary_targets.to(device))}
-    groups = prepare_groups(inputs["ordinary"][1][..., warmup_samples:], inputs["auxiliary"][1][..., warmup_samples:])
+    groups = prepare_groups(*(model_targets(model, inputs[group][1], target_source)[0][..., warmup_samples:]
+                              for group in ("ordinary", "auxiliary")))
     rows = {}
     for group, microbatch in (("ordinary", ordinary_microbatch), ("auxiliary", auxiliary_microbatch)):
         row = accumulate_group(model, *inputs[group], group=group, microbatch=microbatch,
@@ -468,7 +546,7 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
             verify_input_gradients=verify_input_gradients, progress=progress,
             extra_ordinary_primary_sdr_weight=extra_ordinary_primary_sdr_weight,
             teacher_coefficient=teacher if group == "ordinary" else 0.,
-            teacher_targets=teacher_targets if group == "ordinary" else None)
+            teacher_targets=teacher_targets if group == "ordinary" else None, target_source=target_source)
         reduction = getattr(groups, group)
         _require(row["active_windows"] == reduction.active.cpu().tolist()
                 and row["absent_windows"] == reduction.absent.cpu().tolist(), "Canonical group activity differs")
@@ -481,7 +559,7 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
 def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, extra_ordinary_primary_sdr_weight=0.,
-                   teacher_coefficient=0., teacher_targets=None):
+                   teacher_coefficient=0., teacher_targets=None, target_source=None):
     """Accumulate both independently normalized groups, then clip/update once.
 
     Optional callbacks run only before the final update, and may raise to stop
@@ -514,7 +592,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     rows = accumulate_groups(model, mixture_cpu, targets_cpu, warmup_samples=warmup_samples,
         ordinary_microbatch=ordinary_microbatch, auxiliary_microbatch=auxiliary_microbatch,
         check_continue=check_continue, after_group=after_group, extra_ordinary_primary_sdr_weight=extra,
-        teacher_coefficient=teacher, teacher_targets=teacher_targets)
+        teacher_coefficient=teacher, teacher_targets=teacher_targets, target_source=target_source)
     gradient_norms = {}
     for name, parameter in model.named_parameters():
         _require(parameter.grad is not None and bool(torch.isfinite(parameter.grad).all()),
@@ -531,15 +609,19 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     _require(ema.updates == step and len(optimizer.state) == model.parameter_tensor_count
             and all(state["step"].item() == step for state in optimizer.state.values()),
             "Grouped update advanced Adam or EMA incorrectly")
+    auxiliary_source = (target_source if target_source in ("bass", "drums")
+                       and tuple(model.architecture_metadata["source_order"]) == (target_source,) else None)
     return {"step": step, "accumulation_policy": policy(extra_ordinary_primary_sdr_weight=extra,
-            teacher_coefficient=teacher), "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
+            teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source),
+            "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
             "gradient_norm_before_clip": float(norm), "parameter_gradient_norms": gradient_norms, **endpoint}
 
 
 def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, share_gru_weights=True,
-                   extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None):
+                   extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None,
+                   target_source=None):
     """Complete both loss groups, then clip, advance Adam and update EMA once.
 
     CUDA BF16 replay shares exactly equal saved GRU transposes by default.
@@ -550,6 +632,7 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     """
     from ._losses.saved_gru import share_saved_gru_weights
 
+    source_index(target_source)
     parameter = next(model.parameters())
     sharing = (share_gru_weights and parameter.is_cuda
                and getattr(model, "training_precision", "fp32") == "bf16")
@@ -559,4 +642,4 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
             warmup_samples=warmup_samples, ordinary_microbatch=ordinary_microbatch,
             auxiliary_microbatch=auxiliary_microbatch, check_continue=check_continue,
             after_group=after_group, extra_ordinary_primary_sdr_weight=extra_ordinary_primary_sdr_weight,
-            teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets)
+            teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets, target_source=target_source)

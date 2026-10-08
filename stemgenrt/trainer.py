@@ -21,12 +21,24 @@ from torch.utils.data import DataLoader
 from .checkpoint import ParameterEMA, load_model, load_training_checkpoint, save_training_checkpoint, state_sha256
 from .data import (AbsoluteIndexSampler, CROP_SAMPLES, WARMUP_SAMPLES, audio_sha,
                    batch_recipes, load_manifest, make_dataset, remix_batch, worker_init, policy as data_policy)
-from .losses import grouped_update, _teacher_weight
+from .losses import grouped_update, _teacher_weight, source_index
 from .model import StemgenRT58
+from .compact import CompactSeparator, SOURCE_ORDER
+from .banded import BandSeparator
+from .specialist import SpecialistSeparator
 
 
 @dataclass(frozen=True)
 class TrainingConfig:
+    model_family: str = "released"
+    compact_hidden_size: int = 384
+    compact_layers: int = 3
+    band_width: int = 96
+    band_global_width: int = 192
+    band_layers: int = 2
+    specialist_feature_n_fft: int | None = None
+    specialist_waveform_basis: int | None = None
+    target_source: str | None = None
     attention_window: int = 32
     past_filter: bool = False
     steps: int = 2000
@@ -54,6 +66,40 @@ class TrainingConfig:
     teacher_checkpoint: str | None = None
 
     def validate(self):
+        source_index(self.target_source)
+        if self.model_family not in ("released", "compact", "banded", "specialist"):
+            raise ValueError("Unknown model_family")
+        if (type(self.compact_hidden_size) is not int or not 16 <= self.compact_hidden_size <= 1024
+                or type(self.compact_layers) is not int or not 1 <= self.compact_layers <= 4):
+            raise ValueError("Invalid compact backbone geometry")
+        if self.model_family != "compact" and (self.compact_hidden_size != 384 or self.compact_layers != 3):
+            raise ValueError("Compact geometry cannot configure another model family")
+        if self.model_family in ("compact", "banded") and (self.target_source not in (None, "vocals")
+                                               or self.teacher_coefficient != 0.):
+            raise ValueError("Compact experiments support joint or vocal supervised training without an online teacher")
+        if (type(self.band_width) is not int or not 16 <= self.band_width <= 256
+                or type(self.band_global_width) is not int or not 16 <= self.band_global_width <= 512
+                or type(self.band_layers) is not int or not 1 <= self.band_layers <= 4):
+            raise ValueError("Invalid band backbone geometry")
+        if self.model_family not in ("banded", "specialist") and (self.band_width, self.band_global_width, self.band_layers) != (96, 192, 2):
+            raise ValueError("Band geometry cannot configure another model family")
+        if self.model_family in ("banded", "specialist") and self.precision != "fp32":
+            raise ValueError("Banded experiments require precision=fp32")
+        if self.model_family == "specialist":
+            if self.target_source not in ("bass", "drums") or self.teacher_coefficient != 0.:
+                raise ValueError("Specialists require bass or drums supervision without an online teacher")
+            if (self.specialist_feature_n_fft is not None and
+                    (type(self.specialist_feature_n_fft) is not int or self.specialist_feature_n_fft not in (1024, 4096))):
+                raise ValueError("Invalid specialist feature FFT")
+            if self.target_source == "drums" and self.specialist_feature_n_fft not in (None, 1024):
+                raise ValueError("Long analysis is a bass-only feature")
+            if (self.specialist_waveform_basis is not None and
+                    (type(self.specialist_waveform_basis) is not int or not 0 <= self.specialist_waveform_basis <= 512)):
+                raise ValueError("Invalid specialist waveform basis")
+            if self.target_source == "bass" and self.specialist_waveform_basis not in (None, 0):
+                raise ValueError("Waveform residual is a drums-only feature")
+        elif self.specialist_feature_n_fft is not None or self.specialist_waveform_basis is not None:
+            raise ValueError("Specialist geometry cannot configure another model family")
         if self.past_filter is not False:
             raise ValueError("The current model does not use a past filter")
         if type(self.attention_window) is not int or self.attention_window != 32:
@@ -167,7 +213,26 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     corpus = load_manifest(manifest, expected_split="train")
     root_weights = config.root_weights or corpus.root_weights
     config = replace(config, root_weights=dict(root_weights)).validate()
+    if config.model_family == "specialist":
+        config = replace(config,
+            specialist_feature_n_fft=(4096 if config.target_source == "bass" else 1024)
+                if config.specialist_feature_n_fft is None else config.specialist_feature_n_fft,
+            specialist_waveform_basis=(0 if config.target_source == "bass" else 256)
+                if config.specialist_waveform_basis is None else config.specialist_waveform_basis).validate()
     config_dict = asdict(config)
+    if config.model_family not in ("banded", "specialist"):
+        for key in ("band_width", "band_global_width", "band_layers"):
+            config_dict.pop(key)
+    if config.model_family != "specialist":
+        for key in ("specialist_feature_n_fft", "specialist_waveform_basis"):
+            config_dict.pop(key)
+    if config.model_family != "compact":
+        for key in ("compact_hidden_size", "compact_layers"):
+            config_dict.pop(key)
+    if config.model_family == "released":
+        config_dict.pop("model_family")
+    if config.target_source is None:
+        config_dict.pop("target_source")
     # Preserve the exact configuration identity of existing baseline checkpoints.
     if not config.past_filter:
         config_dict.pop("past_filter")
@@ -207,8 +272,25 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         if not 0 <= step < stop:
             raise ValueError("Resume must precede the requested stopping point")
     else:
-        model = (load_model(checkpoint, expected_sha256=sha256, role=role) if checkpoint
-                 else StemgenRT58())
+        if checkpoint:
+            model = load_model(checkpoint, expected_sha256=sha256, role=role)
+            from .checkpoint import _validate_geometry_config
+            _validate_geometry_config(config_dict, model)
+        elif config.model_family == "compact":
+            model = CompactSeparator(sources=("vocals",) if config.target_source == "vocals" else SOURCE_ORDER,
+                hidden_size=config.compact_hidden_size, layers=config.compact_layers)
+        elif config.model_family == "banded":
+            model = BandSeparator(sources=("vocals",) if config.target_source == "vocals" else SOURCE_ORDER,
+                band_width=config.band_width, global_width=config.band_global_width, layers=config.band_layers)
+        elif config.model_family == "specialist":
+            model = SpecialistSeparator(source=config.target_source, band_width=config.band_width,
+                global_width=config.band_global_width, layers=config.band_layers,
+                feature_n_fft=config.specialist_feature_n_fft, waveform_basis=config.specialist_waveform_basis)
+        else:
+            model = StemgenRT58()
+        if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
+            model.provenance.update(parent_training_updates=model.provenance.get("training_updates", 0),
+                                    current_stage_updates=0)
         model.to(device).train().requires_grad_(True)
         model.training_precision = config.precision
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, foreach=False)
@@ -284,9 +366,13 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                 update = grouped_update(model, optimizer, ema, mixture, targets, step=step + 1,
                     warmup_samples=config.warmup_samples, ordinary_microbatch=config.microbatch_size,
                     auxiliary_microbatch=config.auxiliary_microbatch_size,
-                    extra_ordinary_primary_sdr_weight=config.extra_ordinary_primary_sdr_weight, **teacher_options)
+                    extra_ordinary_primary_sdr_weight=config.extra_ordinary_primary_sdr_weight,
+                    target_source=config.target_source, **teacher_options)
                 del teacher_options
                 step += 1
+                if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
+                    model.provenance.update(current_stage_updates=step,
+                        training_updates=model.provenance["parent_training_updates"] + step)
                 if any(not torch.equal(tensor, fixed[name]) for name, tensor in model.named_buffers()):
                     raise RuntimeError("Training modified a fixed model buffer")
                 row = {**update, **teacher_metadata, "lr": optimizer.param_groups[0]["lr"], "first_sample_index": first,

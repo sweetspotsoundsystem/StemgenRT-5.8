@@ -142,7 +142,8 @@ def test_silence_and_auxiliary_input_validation():
 
 @pytest.mark.parametrize("extra", [0., .2], ids=["baseline", "primary_sdr_ablation"])
 @pytest.mark.parametrize("teacher_coefficient", [0., 1.])
-def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, extra, teacher_coefficient):
+@pytest.mark.parametrize("target_source", [None, "vocals"])
+def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, extra, teacher_coefficient, target_source):
     """Compare replay to an independently retained tiny neural graph.
 
     This isolates the accumulation protocol without a costly full-size model;
@@ -158,6 +159,7 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(43)
         model = torch.nn.Linear(2, 8, dtype=torch.float64)
+    model.architecture_metadata = {"source_order": list(losses.SOURCE_NAMES)}
     with torch.no_grad():
         model.weight.mul_(.1)
         model.bias.mul_(.1)
@@ -188,13 +190,13 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
         result = render(model, audio, warmup_samples=128, carry_state=True)
         reference_coordinates[group] = last_coordinates
         reference_loss = reference_loss + coefficient * objective(
-            result.raw, result.deployed, truth[..., 128:], audio[..., 128:],
+            result.raw, result.deployed, truth[..., 128:], audio[..., 128:], target_source=target_source,
             **({"extra_ordinary_primary_sdr_weight": extra} if group == "ordinary" else {})).total
         if teacher_coefficient and group == "ordinary":
             from stemgenrt._losses.teacher import contribution
             reference_loss = reference_loss + teacher_coefficient * contribution(
                 result.deployed, teacher_targets, truth[..., 128:], audio[..., 128:],
-                losses.prepare_reduction(truth[..., 128:])).total
+                losses.prepare_reduction(truth[..., 128:]), target_source=target_source).total
     expected = torch.autograd.grad(reference_loss, tuple(model.parameters()))
 
     def compare_capture_coordinates(phase, group, offset):
@@ -206,7 +208,8 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
                                    ordinary_microbatch=4, auxiliary_microbatch=1,
                                    verify_input_gradients=True, progress=compare_capture_coordinates,
                                    extra_ordinary_primary_sdr_weight=extra,
-                                   teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets)
+                                   teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets,
+                                   target_source=target_source)
     for parameter, reference in zip(model.parameters(), expected, strict=True):
         torch.testing.assert_close(parameter.grad, reference, atol=1e-6, rtol=1e-5)
     assert abs(sum(row["weighted_loss"] for row in rows.values()) - float(reference_loss.detach())) < 3e-6

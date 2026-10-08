@@ -21,14 +21,61 @@ import numpy as np
 import torch
 
 from stemgenrt.model import StemgenRT58, VERSION
+from stemgenrt.compact import CompactSeparator, VERSION as COMPACT_VERSION, SOURCE_ORDER
+from stemgenrt.banded import BandSeparator, VERSION as BAND_VERSION
+from stemgenrt.specialist import SpecialistSeparator, VERSION as SPECIALIST_VERSION
 from stemgenrt._checkpoint.codec import CODEC, pack, unpack
 
 SCHEMA = "hs-tasnet-eight-state-training-v1"
+COMPACT_SCHEMA = "stemgenrt-compact-training-v1"
+BAND_SCHEMA = "stemgenrt-causal-bands-training-v1"
+SPECIALIST_SCHEMA = "stemgenrt-independent-specialist-training-v1"
 NATIVE_SCHEMA = "latency58-branch-memory-inference-v1"
 EMA_SCHEMA = "latency58-branch-parameter-ema-v1"
 
 
 def _validate_geometry_config(config, model):
+    if type(model) is SpecialistSeparator:
+        _require(config.get("model_family") == "specialist"
+                 and model.sources == (config.get("target_source"),)
+                 and config.get("band_width") == model.band_width
+                 and config.get("band_global_width") == model.global_width
+                 and config.get("band_layers") == model.layers
+                 and config.get("specialist_feature_n_fft") == model.feature_n_fft
+                 and config.get("specialist_waveform_basis") == model.waveform_basis
+                 and config.get("teacher_coefficient", 0.) == 0.
+                 and config.get("precision") == "fp32",
+                 "Training configuration differs from the specialist architecture")
+        _require(config.get("past_filter", False) is False and config.get("attention_window", 32) == 32,
+                 "Specialist configuration contains unsupported attention/filter overrides")
+        return
+    if type(model) is BandSeparator:
+        expected_sources = ("vocals",) if config.get("target_source") == "vocals" else SOURCE_ORDER
+        _require(config.get("model_family") == "banded"
+                 and config.get("target_source") in (None, "vocals")
+                 and config.get("band_width") == model.band_width
+                 and config.get("band_global_width") == model.global_width
+                 and config.get("band_layers") == model.layers
+                 and model.sources == expected_sources
+                 and config.get("teacher_coefficient", 0.) == 0.
+                 and config.get("precision") == "fp32",
+                 "Training configuration differs from the banded architecture")
+        _require(config.get("past_filter", False) is False and config.get("attention_window", 32) == 32,
+                 "Banded configuration contains unsupported attention/filter overrides")
+        return
+    if type(model) is CompactSeparator:
+        expected_sources = ("vocals",) if config.get("target_source") == "vocals" else SOURCE_ORDER
+        _require(config.get("model_family") == "compact"
+                 and config.get("target_source") in (None, "vocals")
+                 and config.get("compact_hidden_size") == model.hidden_size
+                 and config.get("compact_layers") == model.layers
+                 and model.sources == expected_sources
+                 and config.get("teacher_coefficient", 0.) == 0.,
+                 "Training configuration differs from the compact architecture")
+        _require(config.get("past_filter", False) is False and config.get("attention_window", 32) == 32,
+                 "Compact configuration contains unsupported attention/filter overrides")
+        return
+    _require(config.get("model_family", "released") == "released", "Training model family differs")
     _require(type(config.get("past_filter", False)) is bool
              and config.get("past_filter", False) is False,
              "Training configuration past filter differs from the model")
@@ -94,7 +141,7 @@ class ParameterEMA:
     """One FP32 parameter update after each Adam update; fixed buffers stay fixed."""
 
     def __init__(self, model, *, decay=.995, base_state_sha256=None):
-        _require(type(model) is StemgenRT58 and type(decay) is float
+        _require(type(model) in (StemgenRT58, CompactSeparator, BandSeparator, SpecialistSeparator) and type(decay) is float
                  and math.isfinite(decay) and 0 <= decay < 1, "Invalid EMA model or decay")
         self.decay, self.updates = decay, 0
         self.architecture = copy.deepcopy(model.architecture_metadata)
@@ -106,7 +153,7 @@ class ParameterEMA:
         self._validate_model(model)
 
     def _validate_model(self, model):
-        _require(type(model) is StemgenRT58 and model.architecture_metadata == self.architecture,
+        _require(type(model) in (StemgenRT58, CompactSeparator, BandSeparator, SpecialistSeparator) and model.architecture_metadata == self.architecture,
                  "EMA architecture differs")
         parameters, buffers = dict(model.named_parameters()), dict(model.named_buffers())
         _require(list(parameters) == list(self.parameters) and len(parameters) == model.parameter_tensor_count
@@ -184,7 +231,20 @@ class ParameterEMA:
 def _new_model(architecture):
     # Constructing a loader must not consume the training RNG being restored.
     with torch.random.fork_rng(devices=[]), torch.device("cpu"):
-        model = StemgenRT58()
+        if architecture.get("version") == SPECIALIST_VERSION:
+            model = SpecialistSeparator(source=architecture["source_order"][0],
+                band_width=architecture["band_width"], global_width=architecture["global_width"],
+                layers=architecture["layers"], feature_n_fft=architecture["feature_n_fft"],
+                waveform_basis=architecture["waveform_basis"])
+        elif architecture.get("version") == COMPACT_VERSION:
+            model = CompactSeparator(sources=architecture["source_order"],
+                hidden_size=architecture["hidden_size"], layers=architecture["layers"])
+        elif architecture.get("version") == BAND_VERSION:
+            model = BandSeparator(sources=architecture["source_order"],
+                band_width=architecture["band_width"], global_width=architecture["global_width"],
+                layers=architecture["layers"])
+        else:
+            model = StemgenRT58()
     _require(architecture == model.architecture_metadata, "Checkpoint architecture differs")
     return model
 
@@ -202,6 +262,7 @@ def _native_payload_model(payload):
              and type(payload["step"]) is int and payload["step"] > 0,
              "Unsupported native checkpoint schema")
     model = _new_model(payload["architecture"])
+    _require(type(model) is StemgenRT58, "Native historical checkpoints require the released architecture")
     _require(payload["architecture"] == model.architecture_metadata
              and payload["parameter_names"] == [name for name, _ in model.named_parameters()],
              "Native checkpoint architecture differs")
@@ -344,7 +405,7 @@ def _validate_training_provenance(config, provenance):
 def save_training_checkpoint(path, model, optimizer, ema, *, step, next_sample_index,
                              config, data_identity, metadata=None, compressed=True):
     """Atomically replace one checkpoint after a complete Adam/EMA update."""
-    _require(type(model) is StemgenRT58 and isinstance(config, dict)
+    _require(type(model) in (StemgenRT58, CompactSeparator, BandSeparator, SpecialistSeparator) and isinstance(config, dict)
              and type(ema) is ParameterEMA and ema.updates == step, "Invalid training checkpoint objects")
     _validate_training_provenance(config, model.provenance)
     _validate_geometry_config(config, model)
@@ -352,9 +413,16 @@ def save_training_checkpoint(path, model, optimizer, ema, *, step, next_sample_i
     _validate_optimizer(model, optimizer, step)
     state = _cpu_tree(model.state_dict())
     _validate_tensors(state, model.state_dict())
-    payload = {"schema": SCHEMA, "architecture": copy.deepcopy(model.architecture_metadata),
+    schema = {CompactSeparator: COMPACT_SCHEMA, BandSeparator: BAND_SCHEMA,
+              SpecialistSeparator: SPECIALIST_SCHEMA}.get(type(model), SCHEMA)
+    provenance = _raw_provenance(model.provenance)
+    if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
+        parent_updates = provenance.get("parent_training_updates", 0)
+        _require(type(parent_updates) is int and parent_updates >= 0, "Invalid compact parent update count")
+        provenance.update(current_stage_updates=step, training_updates=parent_updates + step)
+    payload = {"schema": schema, "architecture": copy.deepcopy(model.architecture_metadata),
         "parameter_names": [name for name, _ in model.named_parameters()], "model": state,
-        "model_state_sha256": state_sha256(state), "provenance": _raw_provenance(model.provenance),
+        "model_state_sha256": state_sha256(state), "provenance": provenance,
         "optimizer": _cpu_tree(optimizer.state_dict()), "ema": ema.state_dict(model),
         "step": step, "next_sample_index": next_sample_index, "config": copy.deepcopy(config),
         "config_sha256": _json_sha(config), "data_identity": copy.deepcopy(data_identity),
@@ -370,7 +438,7 @@ def save_training_checkpoint(path, model, optimizer, ema, *, step, next_sample_i
 
 
 def _training_payload(envelope):
-    _require(isinstance(envelope, dict) and envelope.get("schema") == SCHEMA
+    _require(isinstance(envelope, dict) and envelope.get("schema") in (SCHEMA, COMPACT_SCHEMA, BAND_SCHEMA, SPECIALIST_SCHEMA)
              and envelope.get("codec") in (None, CODEC), "Unsupported training checkpoint schema or codec")
     _require(sys.byteorder == "little", "Checkpoint decoding requires little-endian tensors")
     payload = unpack(envelope["payload"]) if envelope["codec"] else envelope["payload"]
@@ -379,12 +447,21 @@ def _training_payload(envelope):
              "Checkpoint configuration or dataset fingerprint differs")
     _validate_training_provenance(payload["config"], payload["provenance"])
     _validate_cursor(payload["step"], payload["next_sample_index"], payload["config"])
+    if payload["schema"] in (COMPACT_SCHEMA, BAND_SCHEMA, SPECIALIST_SCHEMA):
+        provenance = payload["provenance"]
+        parent = provenance.get("parent_training_updates", 0)
+        _require(type(parent) is int and parent >= 0
+                 and provenance.get("current_stage_updates") == payload["step"]
+                 and provenance.get("training_updates") == parent + payload["step"],
+                 "Compact training history differs from checkpoint endpoint")
     return payload
 
 
 def _training_model(payload):
     model = _new_model(payload["architecture"])
-    _require(payload["schema"] == SCHEMA, "Training schema and attention window differ")
+    expected_schema = {CompactSeparator: COMPACT_SCHEMA, BandSeparator: BAND_SCHEMA,
+                       SpecialistSeparator: SPECIALIST_SCHEMA}.get(type(model), SCHEMA)
+    _require(payload["schema"] == expected_schema, "Training schema and architecture differ")
     _validate_geometry_config(payload["config"], model)
     _require(payload["architecture"] == model.architecture_metadata
              and payload["parameter_names"] == [name for name, _ in model.named_parameters()],
@@ -399,7 +476,7 @@ def _training_model(payload):
 
 @dataclass
 class TrainingState:
-    model: StemgenRT58
+    model: StemgenRT58 | CompactSeparator | BandSeparator | SpecialistSeparator
     optimizer: torch.optim.Adam
     ema: ParameterEMA
     step: int
