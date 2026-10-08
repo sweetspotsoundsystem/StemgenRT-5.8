@@ -91,6 +91,17 @@ mismatches and incompatible timing. It supports `NativeRenderer` evaluation
 through partial final hops and EOF. It does not redistribute errors into the
 learned stems.
 
+`stemgenrt.bass_replacement.BassEvaluationHybrid(anchored, bass)` supports a
+completed bass evaluation before an independent drums model is available.
+Pass a frozen four-output system as `anchored`, for example
+`VocalReplacement(parent, vocals)`, and the authenticated final bass EMA as
+`bass`. It preserves the anchored drums and vocals sample for sample, uses the
+bass model's literal output, and computes Other from the delayed physical
+mixture. Each child retains independent streaming state. Overall and Other
+scores describe this partial hybrid; final three-model quality still requires
+the complete `IndependentStems` system. Keep the declared endpoint, data and
+bass quality thresholds fixed when changing evaluation order.
+
 `stemgenrt.source_views.stream_source_views` renders target-only and
 target-absent recordings continuously from the track origin. Each view keeps
 independent state through unscored prefixes and gaps, with padding only at EOF.
