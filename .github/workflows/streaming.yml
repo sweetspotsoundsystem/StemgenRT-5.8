@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, release/hop128-model]
+    branches: [main, release/hop128-model, codex/independent-vocal-public-20261003]
 
 permissions:
   contents: read
