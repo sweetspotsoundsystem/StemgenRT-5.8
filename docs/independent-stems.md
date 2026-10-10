@@ -121,3 +121,36 @@ reproducible M4/M4 Pro packet with matching training sources. It checks complete
 graphs and states, physical residual Other, exact input history and paced worker
 deadlines. Architecture probes with untrained bass/drums weights remain separate
 from final trained-model and plugin qualification.
+
+
+## Combined ONNX for experimental plug-in testing
+
+Export three authenticated, trained EMA endpoints as one self-contained FP32
+ONNX graph. This keeps all three models independent and computes
+`Other = delayed_input - ((Drums + Bass) + Vocals)` inside the graph:
+
+```sh
+python scripts/export_independent_model.py --output /allocated/independent-export \
+  --drums-checkpoint /path/to/drums.pt --drums-sha256 DRUMS_SHA256 \
+  --bass-checkpoint /path/to/bass.pt --bass-sha256 BASS_SHA256 \
+  --vocals-checkpoint /path/to/vocals.pt --vocals-sha256 VOCALS_SHA256 \
+  --expected-updates 40000
+```
+
+The directory contains `model.onnx`, its complete interface/provenance in
+`model.json`, the three checkpoint identities, source bindings, and independent
+native PyTorch fixtures. The graph accepts `[1,2,128]` float32 stereo at 44.1 kHz
+and emits `[1,4,2,128]` in Drums, Bass, Vocals, Other order. Thirteen prefixed
+states carry each child's complete history, recurrent state and synthesis tails.
+Initialize every state to zero and feed back every returned state unchanged.
+The first output is invalid pre-roll. Each later call emits the preceding input
+hop. Pad a partial final hop once, submit exactly one zero hop, and crop the
+render to the original sample count. The graph delay is 128 samples; the
+plug-in's worker reserve adds 128 at a matching 128-sample host buffer.
+
+The released eight-state plug-in cannot load this graph. Use the matched
+experimental 13-state adapter and its own model identity contract. The source
+model quality score does not qualify this ONNX graph or M4 performance. The
+[native worker probe](../examples/native_independent/README.md) compares separate
+sessions with the combined graph, checks every output/state against PyTorch,
+and measures physical M4/M4 Pro worker timing before plug-in/DAW testing.

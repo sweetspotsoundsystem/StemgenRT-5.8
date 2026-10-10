@@ -135,6 +135,7 @@ def validate_report(report,protocol,case,warmup,measured,check,*,expected_platfo
         and report['preallocated_tensors'] and report['initial_default_policy'] and report['final_default_policy']
         and report['quality_measured'] is False and report['plugin_deadlines_qualified'] is False
         and report['physical_residual_other'] is protocol.get('case_assembly',{}).get(case,False)
+        and report.get('graph_embedded_residual_other',False) is protocol.get('embedded_residual_cases',{}).get(case,False)
         and report['graph_alignment_samples']==128 and report['host_queue_measured'] is False,
         'Native invocation, provider, policy or scope differs')
 

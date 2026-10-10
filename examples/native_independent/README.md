@@ -2,7 +2,8 @@
 
 This example prepares a self-contained packet for physical Apple M4 and M4 Pro
 machines. It measures complete FP32 graphs, input/output/state copies, and the
-combined physical residual Other on one paced inference worker. The probe does
+combined physical residual Other on one paced inference worker. It compares
+three separate sessions with a single combined graph containing all 13 states. The probe does
 not measure a plugin queue, audio driver or DAW callback.
 
 The selected geometries are the default vocal/joint band models and independent
@@ -66,11 +67,11 @@ Describe the actual conditions. Use a different output directory on M4 Pro.
 Existing results are preserved. Idle sleep is prevented only during the command.
 The runner creates a result ZIP, or a diagnostic ZIP if a preflight or build fails.
 
-With a joint control, five cases run in five rotating rounds: vocal, bass, drums,
-joint and combined DBV with residual Other. Each trial has 1024 paced warmup hops
-and 10,000 measured hops, for 50,000 measured hops per case across five segments.
-Without a joint control, four cases rotate through four rounds and 40,000 measured
-hops per case. Neither is one continuous endurance run.
+With a joint control, six cases run in six rotating rounds: vocal, bass, drums,
+joint, three-session DBV with host residual, and one combined graph with residual.
+Each trial has 1024 paced warmup hops and 10,000 measured hops, for 60,000
+measured hops per case across six segments. Without a joint control, five cases
+rotate through five rounds and 50,000 measured hops per case. Neither is one continuous endurance run.
 
 The CPU provider uses sequential execution, one intra/inter-op thread, no spinning,
 KleidiAI disabled, flushed denormals, preallocated tensors and user-interactive

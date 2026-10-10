@@ -33,6 +33,16 @@ constexpr std::array<const char*, kMaxCount> inputs{
   "audio_chunk", "audio_history", "local_hidden", "global_hidden", "spectral_numerator_tail", "waveform_numerator_tail"};
 constexpr std::array<const char*, kMaxCount> outputs{
   "separated_chunk", "next_audio_history", "next_local_hidden", "next_global_hidden", "next_spectral_numerator_tail", "next_waveform_numerator_tail"};
+constexpr std::array<const char*, 14> combinedInputs{
+  "audio_chunk", "drums_audio_history", "drums_local_hidden", "drums_global_hidden",
+  "drums_spectral_numerator_tail", "drums_waveform_numerator_tail", "bass_audio_history",
+  "bass_local_hidden", "bass_global_hidden", "bass_spectral_numerator_tail", "vocals_audio_history",
+  "vocals_local_hidden", "vocals_global_hidden", "vocals_spectral_numerator_tail"};
+constexpr std::array<const char*, 14> combinedOutputs{
+  "separated_chunk", "next_drums_audio_history", "next_drums_local_hidden", "next_drums_global_hidden",
+  "next_drums_spectral_numerator_tail", "next_drums_waveform_numerator_tail", "next_bass_audio_history",
+  "next_bass_local_hidden", "next_bass_global_hidden", "next_bass_spectral_numerator_tail", "next_vocals_audio_history",
+  "next_vocals_local_hidden", "next_vocals_global_hidden", "next_vocals_spectral_numerator_tail"};
 void require(bool condition, const char* why) { if (!condition) throw std::runtime_error(why); }
 size_t elements(const std::vector<int64_t>& shape) {
   return std::accumulate(shape.begin(), shape.end(), size_t{1}, std::multiplies<size_t>{});
@@ -83,9 +93,11 @@ struct Graph {
   std::vector<std::vector<float>> in, out;
   std::vector<Ort::Value> iv, ov;
   std::vector<float> delivered;
+  std::vector<const char*> inputNames, outputNames;
   explicit Graph(Ort::Env& env, const char* path, const Ort::SessionOptions& options) : session(env, path, options) {
     count = session.GetInputCount();
-    require((count == 5 || count == 6) && session.GetOutputCount() == count, "Expected four or five recurrent states");
+    require((count == 5 || count == 6 || count == 14) && session.GetOutputCount() == count,
+            "Expected a selected child model or the 13-state combined graph");
     Ort::AllocatorWithDefaultOptions allocator;
     const auto type = session.GetOutputTypeInfo(0);
     const auto audio = type.GetTensorTypeAndShapeInfo().GetShape();
@@ -94,7 +106,10 @@ struct Graph {
     const auto historyType = session.GetInputTypeInfo(1);
     const auto history = historyType.GetTensorTypeAndShapeInfo().GetShape();
     std::vector<int64_t> expectedHistory, expectedLocal, expectedGlobal;
-    if (count == 6) {
+    if (count == 14) {
+      require(audio[1] == 4, "The combined graph must emit four stems");
+      kind = "independent";
+    } else if (count == 6) {
       require(audio[1] == 1, "The drums waveform specialist has one output");
       kind = "drums";
       expectedHistory = {1, 2, 896}; expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
@@ -109,6 +124,16 @@ struct Graph {
     std::vector<std::vector<int64_t>> inputShapes{
       {1, 2, 128}, expectedHistory, expectedLocal, expectedGlobal, {1, audio[1], 2, 128}};
     if (count == 6) inputShapes.push_back({1, 1, 2, 128});
+    if (count == 14) {
+      inputShapes = {{1, 2, 128}, {1, 2, 896}, {2, 20, 96}, {2, 1, 192},
+        {1, 1, 2, 128}, {1, 1, 2, 128}, {1, 2, 3968}, {2, 17, 80}, {2, 1, 160},
+        {1, 1, 2, 128}, {1, 2, 896}, {2, 20, 96}, {2, 1, 192}, {1, 1, 2, 128}};
+      inputNames.assign(combinedInputs.begin(), combinedInputs.end());
+      outputNames.assign(combinedOutputs.begin(), combinedOutputs.end());
+    } else {
+      inputNames.assign(inputs.begin(), inputs.begin() + count);
+      outputNames.assign(outputs.begin(), outputs.begin() + count);
+    }
     auto outputShapes = inputShapes;
     outputShapes[0] = audio;
     auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -118,7 +143,7 @@ struct Graph {
       auto outputName = session.GetOutputNameAllocated(i, allocator);
       auto it = session.GetInputTypeInfo(i), ot = session.GetOutputTypeInfo(i);
       auto ii = it.GetTensorTypeAndShapeInfo(), oi = ot.GetTensorTypeAndShapeInfo();
-      require(std::string(inputName.get()) == inputs[i] && std::string(outputName.get()) == outputs[i]
+      require(std::string(inputName.get()) == inputNames[i] && std::string(outputName.get()) == outputNames[i]
           && ii.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
           && oi.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
           && ii.GetShape() == inputShapes[i] && oi.GetShape() == outputShapes[i], "Selected architecture ABI differs");
@@ -131,7 +156,7 @@ struct Graph {
   double run(const float* audio, const Ort::RunOptions& options) {
     std::copy_n(audio, 256, in[0].data());
     const auto began = Clock::now();
-    session.Run(options, inputs.data(), iv.data(), count, outputs.data(), ov.data(), count);
+    session.Run(options, inputNames.data(), iv.data(), count, outputNames.data(), ov.data(), count);
     const auto ended = Clock::now();
     for (size_t i = 1; i < count; ++i) std::copy(out[i].begin(), out[i].end(), in[i].begin());
     std::copy(out[0].begin(), out[0].end(), delivered.begin());
@@ -249,6 +274,7 @@ int main(int argc, char** argv) {
     std::cout << "{\"status\":\"completed\",\"paced\":true,\"condition\":\"qos\",\"graphs\":" << graphs.size()
       << ",\"warmup_hops\":" << warmup << ",\"measured_hops\":" << measured << ",\"parity_trace\":" << (check ? "true" : "false")
       << ",\"physical_residual_other\":" << (combined ? "true" : "false")
+      << ",\"graph_embedded_residual_other\":" << (graphs.size() == 1 && graphs[0]->kind == "independent" ? "true" : "false")
       << ",\"graph_alignment_samples\":128,\"host_queue_measured\":false"
       << ",\"runtime_platform\":" << std::quoted(kPlatform)
       << ",\"onnxruntime_version\":\"1.26.0\",\"loaded_runtime\":" << std::quoted(runtime.dli_fname)

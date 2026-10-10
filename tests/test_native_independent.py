@@ -83,13 +83,15 @@ def test_valid_synthetic_records_reaggregate_exact_exposure(synthetic):
     assert result['quality_measured'] is result['plugin_deadlines_qualified'] is False
 
 
-@pytest.mark.parametrize('mutation',['portable','wrong_count','missing_preflight','corrupt_trace','changed_endpoint','wrong_statistics','timing_coordinates'])
+@pytest.mark.parametrize('mutation',['portable','wrong_count','missing_preflight','corrupt_trace','changed_endpoint','wrong_statistics','timing_coordinates','embedded_residual'])
 def test_synthetic_invalid_evidence_is_rejected(synthetic,mutation):
     package,output=synthetic
     path=output/'round2-toy.json'
     report=json.loads(path.read_text())
     if mutation=='portable':
         report['runtime_platform']='portable'
+    elif mutation=='embedded_residual':
+        report['graph_embedded_residual_other']=True
     elif mutation=='wrong_count':
         report['deadline_misses']=0
     elif mutation=='missing_preflight':

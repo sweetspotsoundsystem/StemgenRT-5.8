@@ -23,6 +23,7 @@ from stemgenrt.band_export import export_fp32 as export_band
 from stemgenrt.specialist import SpecialistSeparator
 from stemgenrt.specialist_export import export_fp32 as export_specialist
 from stemgenrt.independent import IndependentStems
+from stemgenrt.independent_export import export_fp32 as export_independent
 
 if __package__:
     from .analyze import require, sha
@@ -137,7 +138,10 @@ def prepare(args):
             "reference_kind": "Native PyTorch FP32; every output and state at every hop"}
         print(json.dumps({"prepared": key, "trained": not scratch}), flush=True)
     combined = IndependentStems(drums=native["drums"], bass=native["bass"], vocals=native["vocals"])
-    state, assembly = None, []
+    combined_key = "independent-dbv-residual-fp32"
+    combined_report = export_independent(combined, output / "models" / (combined_key + ".onnx"))
+    write(output / "models" / (combined_key + ".json"), combined_report)
+    state, assembly, combined_values = None, [], []
     with torch.inference_mode():
         for index, hop in enumerate(audio[:192]):
             result = combined.render(torch.from_numpy(hop[None].copy()), state)
@@ -146,12 +150,26 @@ def prepare(args):
                 np.testing.assert_array_equal(result.deployed[0, source_index].numpy(), waveforms[arm][index, 0])
             np.testing.assert_array_equal(result.delayed_mixture[0].numpy(), audio[index - 1] if index else np.zeros_like(hop))
             assembly.append(np.concatenate((result.deployed[0, 3].numpy().reshape(-1), hop.reshape(-1))))
+            combined_values.append(np.concatenate([value.numpy().reshape(-1)
+                for value in (result.deployed, *(v for child_state in state for v in child_state))]))
     assembly_path = output / "reference/combined-assembly.f32"
     np.asarray(assembly, dtype="<f4").tofile(assembly_path)
+    combined_reference = output / "reference" / (combined_key + ".f32")
+    np.asarray(combined_values, dtype="<f4").tofile(combined_reference)
     keys = {arm: next(key for key, value in models.items() if value["source_order"] ==
                     ([arm] if arm != "joint" else ["drums", "bass", "vocals", "other"])) for arm in arms}
     cases = {arm + "_fp32": [keys[arm]] for arm in arms}
     cases["combined_dbv_residual_fp32"] = [keys[arm] for arm in ("drums", "bass", "vocals")]
+    models[combined_key] = {"path": "models/" + combined_key + ".onnx",
+        "sha256": combined_report["onnx_sha256"], "source_order": ["drums", "bass", "vocals", "other"],
+        "precision": "fp32", "trained": not args.scratch_specialists,
+        "role": "combined independent DBV with residual inside one graph",
+        "checkpoint_sha256": {arm: models[keys[arm]]["checkpoint_sha256"] for arm in ("drums", "bass", "vocals")},
+        "provenance": combined_report["provenance"], "weight_sha256": combined_report["weight_sha256"],
+        "budget": combined.compute_budget(), "interface": combined_report["interface"],
+        "reference": str(combined_reference.relative_to(output)), "reference_sha256": sha(combined_reference),
+        "reference_hops": 192, "reference_kind": "Native IndependentStems FP32; all outputs and 13 states"}
+    cases["combined_single_graph_fp32"] = [combined_key]
     names = list(cases)
     interpretation = (f"{len(names)} order-balanced segments per case, not a continuous endurance run. "
         + ("Bass/drums weights are untrained architecture probes. " if args.scratch_specialists else "All three stems use authenticated EMA checkpoints. ")
@@ -161,6 +179,7 @@ def prepare(args):
         "sample_rate": 44100, "hop_samples": 128, "graph_alignment_samples": 128, "algorithmic_delay_samples": 256,
         "input_file": "input.f32", "input_sha256": sha(output / "input.f32"), "synthetic_audio_only": True,
         "cases": cases, "models": models, "case_assembly": {name: name == "combined_dbv_residual_fp32" for name in names},
+        "embedded_residual_cases": {name: name == "combined_single_graph_fp32" for name in names},
         "assembly_reference": str(assembly_path.relative_to(output)), "assembly_reference_sha256": sha(assembly_path),
         "round_order": [names[index:] + names[:index] for index in range(len(names))],
         "warmup_hops": 1024, "measured_hops_per_trial": 10000, "measured_hops_per_case": 10000 * len(names),
