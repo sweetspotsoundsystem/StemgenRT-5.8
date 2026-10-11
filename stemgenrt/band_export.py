@@ -16,6 +16,21 @@ from ._export.helpers import OneFrameGRUForONNX, replace_rmsnorm_layers, model_s
 from ._model.dsp import require
 
 
+class _RFFT4096(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, audio):
+        spectrum = torch.fft.rfft(audio, n=4096, dim=-1)
+        return torch.stack((spectrum.real, spectrum.imag), dim=-1)
+
+    @staticmethod
+    def symbolic(graph, audio):
+        axis = graph.op("Constant", value_t=torch.tensor([-1], dtype=torch.int64))
+        values = graph.op("Unsqueeze", audio, axis)
+        length = graph.op("Constant", value_t=torch.tensor(4096, dtype=torch.int64))
+        result = graph.op("DFT", values, length, axis_i=1, inverse_i=0, onesided_i=1)
+        return result.setType(audio.type().with_sizes([audio.type().sizes()[0], 2049, 2]))
+
+
 class _IRFFT1024(torch.autograd.Function):
     @staticmethod
     def forward(ctx, spectrum):
@@ -54,14 +69,22 @@ class _BandStreamingWrapper(nn.Module):
     def forward(self, audio_chunk, audio_history, local_hidden, global_hidden, spectral_numerator_tail):
         model = self.model
         joined = torch.cat((audio_history, audio_chunk), -1)
-        spectrum = _RFFT1024.apply((joined * model.analysis_window).reshape(2, 1024))
+        spectrum = _RFFT1024.apply((joined[..., -1024:] * model.analysis_window).reshape(2, 1024))
         spectrum = spectrum.reshape(1, 2, 1, 513, 2)
         power = spectrum[..., 0].square() + spectrum[..., 1].square()
         scale = power.mean((1, 3), keepdim=True).clamp_min(1e-8).sqrt()
         normalized = spectrum / scale.unsqueeze(-1)
         features = torch.cat((normalized, torch.log1p((power + 1e-12).sqrt() / scale).unsqueeze(-1)), -1)
         features = features.permute(0, 2, 1, 3, 4)
-        masks, local, glob = model.backbone(features, local_hidden, global_hidden)
+        if model.feature_n_fft == 4096:
+            long_spectrum = _RFFT4096.apply((joined * model.long_analysis_window).reshape(2, 4096))
+            long_spectrum = long_spectrum.reshape(1, 2, 1, 2049, 2)
+            long_power = long_spectrum[..., 0].square() + long_spectrum[..., 1].square()
+            long_scale = long_power.mean((1, 3), keepdim=True).clamp_min(1e-8).sqrt()
+            long_features = torch.log1p((long_power + 1e-12).sqrt() / long_scale).permute(0, 2, 1, 3)
+            masks, local, glob = model.backbone(features, local_hidden, global_hidden, long_features)
+        else:
+            masks, local, glob = model.backbone(features, local_hidden, global_hidden)
         masks = masks.permute(0, 2, 3, 1, 4, 5)
         real, imag = spectrum[:, None, ..., 0], spectrum[:, None, ..., 1]
         separated = torch.stack((real * masks[..., 0] - imag * masks[..., 1],
@@ -69,7 +92,7 @@ class _BandStreamingWrapper(nn.Module):
         frames = _IRFFT1024.apply(separated.reshape(2 * len(model.sources), 513, 2))
         frames = frames[..., 768:].reshape(1, len(model.sources), 2, 256) * model.synthesis.spectral_window
         emitted = (frames[..., :128] + spectral_numerator_tail) / model.synthesis.spectral_denominator
-        return emitted, joined[..., -896:], local, glob, frames[..., 128:]
+        return emitted, joined[..., -model.history_samples:], local, glob, frames[..., 128:]
 
 
 def make_export_copy(model):

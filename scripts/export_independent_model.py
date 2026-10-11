@@ -67,6 +67,10 @@ def main():
     for source in SOURCE_ORDER[:3]:
         parser.add_argument("--"+source+"-checkpoint", type=Path, required=True)
         parser.add_argument("--"+source+"-sha256", required=True)
+        parser.add_argument("--"+source+"-updates", type=int,
+                            help="Expected current-stage updates for this stem; overrides --expected-updates")
+        parser.add_argument("--"+source+"-parent-updates", type=int, default=0,
+                            help="Expected training updates before this stem's current stage (default: 0)")
     args = parser.parse_args()
     if args.output.exists() or args.expected_updates <= 0:
         parser.error("Require a new output directory and positive expected updates")
@@ -76,9 +80,15 @@ def main():
     children, checkpoints = {}, {}
     for source in SOURCE_ORDER[:3]:
         path, digest = getattr(args, source+"_checkpoint"), getattr(args, source+"_sha256")
-        child = load_endpoint(path, digest, source, args.expected_updates)
+        updates = getattr(args, source+"_updates")
+        updates = args.expected_updates if updates is None else updates
+        parent_updates = getattr(args, source+"_parent_updates")
+        if updates <= 0 or parent_updates < 0:
+            parser.error("Require positive stem updates and nonnegative parent updates")
+        child = load_endpoint(path, digest, source, updates, expected_parent_updates=parent_updates)
         children[source] = child.eval().requires_grad_(False)
-        checkpoints[source] = {"sha256": digest, "role": "ema", "updates": args.expected_updates,
+        checkpoints[source] = {"sha256": digest, "role": "ema", "updates": updates,
+            "parent_updates": parent_updates, "total_updates": child.provenance["training_updates"],
             "state_sha256": ck.state_sha256(child.state_dict()),
             "ema_parameters_sha256": ck.state_sha256(dict(child.named_parameters()))}
     model = IndependentStems(**children)
@@ -92,7 +102,8 @@ def main():
     files += [Path(__file__), ROOT/"pyproject.toml", ROOT/"train_streaming.py"]
     write(args.output / "source-bindings.json", {str(p.relative_to(ROOT)): ck.file_sha256(p) for p in files})
     print(json.dumps({"output": str(args.output), "onnx_sha256": report["onnx_sha256"],
-        "bytes": report["bytes"], "states": report["state_count"], "updates_per_child": args.expected_updates,
+        "bytes": report["bytes"], "states": report["state_count"],
+        "updates_per_child": {source: row["updates"] for source, row in checkpoints.items()},
         "native_host_qualified": False}), flush=True)
 
 

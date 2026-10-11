@@ -14,17 +14,19 @@ from stemgenrt.trainer import TrainingConfig
 from test_checkpoint import tree_fingerprint
 
 
-@pytest.mark.parametrize("sources", [("vocals",), SOURCE_ORDER])
-def test_banded_checkpoint_restores_exact_next_update_and_inference_sources(tmp_path, sources):
+@pytest.mark.parametrize("sources,feature_n_fft", [(("vocals",), 1024), (SOURCE_ORDER, 1024), (("vocals",), 4096)])
+def test_banded_checkpoint_restores_exact_next_update_and_inference_sources(tmp_path, sources, feature_n_fft):
     random.seed(16)
     np.random.seed(16)
     torch.manual_seed(16)
-    model = BandSeparator(sources=sources, band_width=16, global_width=32, layers=2).train()
+    model = BandSeparator(sources=sources, band_width=16, global_width=32, layers=2, feature_n_fft=feature_n_fft).train()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, foreach=False)
     ema = ParameterEMA(model)
     config = {"model_family": "banded", "band_width": 16, "band_global_width": 32, "band_layers": 2,
               "target_source": "vocals" if len(sources) == 1 else None,
               "steps": 3, "batch_size": 1, "data_start": 0, "precision": "fp32"}
+    if feature_n_fft != 1024:
+        config["band_feature_n_fft"] = feature_n_fft
 
     def advance(model, optimizer, ema, step):
         audio = torch.randn(1, 2, 512) * (.02 + .001 * random.random() + .001 * np.random.random())
@@ -63,9 +65,10 @@ def test_banded_checkpoint_restores_exact_next_update_and_inference_sources(tmp_
                                   config={**config, "target_source": "bass"}, data_identity={})
 
 
-def test_single_output_complete_group_update_replays_gradients_and_commits_once():
+@pytest.mark.parametrize("feature_n_fft", [1024, 4096])
+def test_single_output_complete_group_update_replays_gradients_and_commits_once(feature_n_fft):
     torch.manual_seed(23)
-    model = BandSeparator(band_width=16, global_width=16, layers=1).train()
+    model = BandSeparator(band_width=16, global_width=16, layers=1, feature_n_fft=feature_n_fft).train()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, foreach=False)
     ema = ParameterEMA(model)
     targets = .02 * torch.randn(16, 4, 2, 128 + 44160)
@@ -79,12 +82,18 @@ def test_single_output_complete_group_update_replays_gradients_and_commits_once(
     assert row["groups"]["auxiliary"]["active_windows"] == [1]
     assert row["groups"]["auxiliary"]["absent_windows"] == [1]
     assert all(v["replay_outputs_bit_exact"] for v in row["groups"].values())
+    if feature_n_fft == 4096:
+        assert any(torch.count_nonzero(m.weight).item() for m in model.backbone.long_encoders)
 
 
 def test_banded_training_config_rejects_silent_recipe_changes():
     base = TrainingConfig(model_family="banded", target_source="vocals", precision="fp32")
     assert base.validate() == base
+    assert replace(base, band_feature_n_fft=4096).validate().band_feature_n_fft == 4096
     for changes in ({"target_source": "bass"}, {"teacher_coefficient": 1.},
-                    {"band_width": 0}, {"model_family": "unknown"}, {"precision": "bf16"}, {"compact_layers": 2}):
+                    {"band_width": 0}, {"model_family": "unknown"}, {"precision": "bf16"}, {"compact_layers": 2},
+                    {"band_feature_n_fft": 2048}, {"band_feature_n_fft": True},
+                    {"band_feature_n_fft": 4096, "target_source": None},
+                    {"band_feature_n_fft": 4096, "model_family": "specialist", "target_source": "bass"}):
         with pytest.raises(ValueError):
             replace(base, **changes).validate()

@@ -114,9 +114,17 @@ struct Graph {
       kind = "drums";
       expectedHistory = {1, 2, 896}; expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
     } else if (history == std::vector<int64_t>{1, 2, 3968}) {
-      require(audio[1] == 1, "The bass specialist has one output");
-      kind = "bass";
-      expectedHistory = {1, 2, 3968}; expectedLocal = {2, 17, 80}; expectedGlobal = {2, 1, 160};
+      require(audio[1] == 1, "Long-analysis models must have one output");
+      const auto localType = session.GetInputTypeInfo(2);
+      const auto local = localType.GetTensorTypeAndShapeInfo().GetShape();
+      expectedHistory = {1, 2, 3968};
+      if (local == std::vector<int64_t>{2, 20, 96}) {
+        kind = "vocals";
+        expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
+      } else {
+        kind = "bass";
+        expectedLocal = {2, 17, 80}; expectedGlobal = {2, 1, 160};
+      }
     } else {
       kind = audio[1] == 1 ? "vocals" : "joint";
       expectedHistory = {1, 2, 896}; expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
@@ -125,9 +133,13 @@ struct Graph {
       {1, 2, 128}, expectedHistory, expectedLocal, expectedGlobal, {1, audio[1], 2, 128}};
     if (count == 6) inputShapes.push_back({1, 1, 2, 128});
     if (count == 14) {
+      const auto vocalHistoryType = session.GetInputTypeInfo(10);
+      const auto vocalHistory = vocalHistoryType.GetTensorTypeAndShapeInfo().GetShape();
+      require(vocalHistory == std::vector<int64_t>{1, 2, 896}
+              || vocalHistory == std::vector<int64_t>{1, 2, 3968}, "Unsupported vocal history geometry");
       inputShapes = {{1, 2, 128}, {1, 2, 896}, {2, 20, 96}, {2, 1, 192},
         {1, 1, 2, 128}, {1, 1, 2, 128}, {1, 2, 3968}, {2, 17, 80}, {2, 1, 160},
-        {1, 1, 2, 128}, {1, 2, 896}, {2, 20, 96}, {2, 1, 192}, {1, 1, 2, 128}};
+        {1, 1, 2, 128}, vocalHistory, {2, 20, 96}, {2, 1, 192}, {1, 1, 2, 128}};
       inputNames.assign(combinedInputs.begin(), combinedInputs.end());
       outputNames.assign(combinedOutputs.begin(), combinedOutputs.end());
     } else {

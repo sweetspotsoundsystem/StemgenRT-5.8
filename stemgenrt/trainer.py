@@ -24,7 +24,7 @@ from .data import (AbsoluteIndexSampler, CROP_SAMPLES, WARMUP_SAMPLES, audio_sha
 from .losses import grouped_update, _teacher_weight, source_index
 from .model import StemgenRT58
 from .compact import CompactSeparator, SOURCE_ORDER
-from .banded import BandSeparator
+from .banded import BandSeparator, extend_vocal_analysis
 from .specialist import SpecialistSeparator
 
 
@@ -36,6 +36,7 @@ class TrainingConfig:
     band_width: int = 96
     band_global_width: int = 192
     band_layers: int = 2
+    band_feature_n_fft: int = 1024
     specialist_feature_n_fft: int | None = None
     specialist_waveform_basis: int | None = None
     target_source: str | None = None
@@ -83,6 +84,10 @@ class TrainingConfig:
             raise ValueError("Invalid band backbone geometry")
         if self.model_family not in ("banded", "specialist") and (self.band_width, self.band_global_width, self.band_layers) != (96, 192, 2):
             raise ValueError("Band geometry cannot configure another model family")
+        if (type(self.band_feature_n_fft) is not int or self.band_feature_n_fft not in (1024, 4096)
+                or (self.band_feature_n_fft == 4096
+                    and (self.model_family != "banded" or self.target_source != "vocals"))):
+            raise ValueError("Long band analysis requires the independent banded vocal model")
         if self.model_family in ("banded", "specialist") and self.precision != "fp32":
             raise ValueError("Banded experiments require precision=fp32")
         if self.model_family == "specialist":
@@ -220,6 +225,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
             specialist_waveform_basis=(0 if config.target_source == "bass" else 256)
                 if config.specialist_waveform_basis is None else config.specialist_waveform_basis).validate()
     config_dict = asdict(config)
+    if config.band_feature_n_fft == 1024:
+        config_dict.pop("band_feature_n_fft")
     if config.model_family not in ("banded", "specialist"):
         for key in ("band_width", "band_global_width", "band_layers"):
             config_dict.pop(key)
@@ -274,6 +281,10 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     else:
         if checkpoint:
             model = load_model(checkpoint, expected_sha256=sha256, role=role)
+            if (config.model_family == "banded" and config.target_source == "vocals"
+                    and config.band_feature_n_fft == 4096 and type(model) is BandSeparator
+                    and model.feature_n_fft == 1024):
+                model = extend_vocal_analysis(model)
             from .checkpoint import _validate_geometry_config
             _validate_geometry_config(config_dict, model)
         elif config.model_family == "compact":
@@ -281,7 +292,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                 hidden_size=config.compact_hidden_size, layers=config.compact_layers)
         elif config.model_family == "banded":
             model = BandSeparator(sources=("vocals",) if config.target_source == "vocals" else SOURCE_ORDER,
-                band_width=config.band_width, global_width=config.band_global_width, layers=config.band_layers)
+                band_width=config.band_width, global_width=config.band_global_width, layers=config.band_layers,
+                feature_n_fft=config.band_feature_n_fft)
         elif config.model_family == "specialist":
             model = SpecialistSeparator(source=config.target_source, band_width=config.band_width,
                 global_width=config.band_global_width, layers=config.band_layers,

@@ -14,23 +14,8 @@ from torch import nn
 from ._export.fp32 import _RFFT1024
 from ._export.helpers import OneFrameGRUForONNX, replace_rmsnorm_layers, model_state_sha256, sha
 from ._model.dsp import require
-from .band_export import _IRFFT1024
+from .band_export import _IRFFT1024, _RFFT4096
 from .specialist import SpecialistSeparator
-
-
-class _RFFT4096(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, audio):
-        spectrum = torch.fft.rfft(audio, n=4096, dim=-1)
-        return torch.stack((spectrum.real, spectrum.imag), dim=-1)
-
-    @staticmethod
-    def symbolic(graph, audio):
-        axis = graph.op("Constant", value_t=torch.tensor([-1], dtype=torch.int64))
-        values = graph.op("Unsqueeze", audio, axis)
-        length = graph.op("Constant", value_t=torch.tensor(4096, dtype=torch.int64))
-        result = graph.op("DFT", values, length, axis_i=1, inverse_i=0, onesided_i=1)
-        return result.setType(audio.type().with_sizes([audio.type().sizes()[0], 2049, 2]))
 
 
 def interface(model):

@@ -40,8 +40,8 @@ def test_banded_replacement_streams_partial_final_hop_without_changing_parent(tm
     assert checkpoint.state_sha256(parent.state_dict()) == before
 
 
-@pytest.mark.parametrize("target_source", ["vocals", None])
-def test_real_trainer_selects_bands_and_retains_identity_on_resume(monkeypatch, tmp_path, target_source):
+@pytest.mark.parametrize("target_source,feature_n_fft", [("vocals", 1024), (None, 1024), ("vocals", 4096)])
+def test_real_trainer_selects_bands_and_retains_identity_on_resume(monkeypatch, tmp_path, target_source, feature_n_fft):
     """Use real factory, optimizer, EMA and serialization with a short test loss.
 
     Data synthesis and the short MSE update replace expensive data/SDR work;
@@ -71,7 +71,7 @@ def test_real_trainer_selects_bands_and_retains_identity_on_resume(monkeypatch, 
     monkeypatch.setattr(trainer, "grouped_update", update)
     config = trainer.TrainingConfig(model_family="banded", target_source=target_source,
         band_width=16, band_global_width=16, band_layers=1, steps=3, warmup=0,
-        checkpoint_every=1, workers=0, device="cpu", precision="fp32")
+        checkpoint_every=1, workers=0, device="cpu", precision="fp32", band_feature_n_fft=feature_n_fft)
     first = trainer.train(config, "synthetic.json", tmp_path / "first", stop_after=1)
     resumed = trainer.train(config, "synthetic.json", tmp_path / "resumed", stop_after=2,
         resume=first["checkpoint"]["path"], sha256=first["checkpoint"]["sha256"])
@@ -83,3 +83,19 @@ def test_real_trainer_selects_bands_and_retains_identity_on_resume(monkeypatch, 
     assert loaded.provenance["training_updates"] == loaded.provenance["current_stage_updates"] == 2
     assert loaded.provenance["parent_training_updates"] == 0
     assert loaded.sources == (("vocals",) if target_source else SOURCE_ORDER)
+    assert loaded.feature_n_fft == feature_n_fft
+    if feature_n_fft == 1024:
+        assert "band_feature_n_fft" not in saved_config
+    else:
+        assert saved_config["band_feature_n_fft"] == 4096
+
+    if target_source == "vocals" and feature_n_fft == 1024:
+        from dataclasses import replace
+        upgraded = trainer.train(replace(config, band_feature_n_fft=4096), "synthetic.json",
+            tmp_path / "upgraded", stop_after=1, checkpoint=first["checkpoint"]["path"],
+            sha256=first["checkpoint"]["sha256"])
+        child = checkpoint.load_model(upgraded["checkpoint"]["path"], expected_sha256=upgraded["checkpoint"]["sha256"])
+        assert child.feature_n_fft == 4096
+        assert child.provenance["parent_training_updates"] == 1
+        assert child.provenance["current_stage_updates"] == 1
+        assert child.provenance["training_updates"] == 2
