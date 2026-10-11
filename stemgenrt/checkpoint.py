@@ -22,7 +22,7 @@ import torch
 
 from stemgenrt.model import StemgenRT58, VERSION
 from stemgenrt.compact import CompactSeparator, VERSION as COMPACT_VERSION, SOURCE_ORDER
-from stemgenrt.banded import BandSeparator, VERSION as BAND_VERSION
+from stemgenrt.banded import BandSeparator, VERSION as BAND_VERSION, LONG_ANALYSIS_VERSION
 from stemgenrt.specialist import SpecialistSeparator, VERSION as SPECIALIST_VERSION
 from stemgenrt._checkpoint.codec import CODEC, pack, unpack
 
@@ -57,6 +57,7 @@ def _validate_geometry_config(config, model):
                  and config.get("band_global_width") == model.global_width
                  and config.get("band_layers") == model.layers
                  and model.sources == expected_sources
+                 and config.get("band_feature_n_fft", 1024) == model.feature_n_fft
                  and config.get("teacher_coefficient", 0.) == 0.
                  and config.get("precision") == "fp32",
                  "Training configuration differs from the banded architecture")
@@ -239,10 +240,10 @@ def _new_model(architecture):
         elif architecture.get("version") == COMPACT_VERSION:
             model = CompactSeparator(sources=architecture["source_order"],
                 hidden_size=architecture["hidden_size"], layers=architecture["layers"])
-        elif architecture.get("version") == BAND_VERSION:
+        elif architecture.get("version") in (BAND_VERSION, LONG_ANALYSIS_VERSION):
             model = BandSeparator(sources=architecture["source_order"],
                 band_width=architecture["band_width"], global_width=architecture["global_width"],
-                layers=architecture["layers"])
+                layers=architecture["layers"], feature_n_fft=architecture["feature_n_fft"])
         else:
             model = StemgenRT58()
     _require(architecture == model.architecture_metadata, "Checkpoint architecture differs")

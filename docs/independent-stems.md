@@ -38,6 +38,35 @@ All train in FP32 with no teacher. Each target has a single output and its own
 absence/preservation auxiliary views, loss reduction, Adam and parameter EMA.
 Checkpoints retain all state needed for exact continuation.
 
+## Optional vocal analysis extension
+
+`BandSeparator(feature_n_fft=4096)` adds trailing Hann log-magnitude features
+to the single-output vocal model. The 1024-point complex carrier, synthesis,
+hop and alignment remain the same. At width 96, the additional projections
+contain 393,408 parameters and use 393,408 dense MACs per hop. Vocal audio
+history grows from 896 to 3,968 samples; hosts must use the exported shapes.
+The combined system retains 13 states and totals 8,259,980 parameters and
+13,646,080 dense MACs per hop. FFT overhead is excluded from those counts.
+
+For a new training stage, `configs/vocals-long-analysis.json` selects this
+variant; `configs/vocals-finetune.json` uses the original analysis with the
+same training schedule. Initializing the long variant from a short-analysis
+vocal checkpoint copies every existing tensor and starts the extra projections
+at zero. The trainer creates fresh Adam and EMA for both configurations. Exact
+`--resume` instead requires the saved architecture and full original recipe.
+
+```sh
+python train_streaming.py --config configs/vocals-long-analysis.json \
+  --manifest /path/to/train.json --validation-manifest /path/to/valid.json \
+  --checkpoint /path/to/vocals.pt --sha256 VOCALS_SHA256 --role ema \
+  --output /path/to/new-vocal-run
+```
+
+FP32 single-model and combined export support this variant. Integer band
+export currently supports only the original 1024-point vocal analysis.
+The extension is an optional training capability; its separation quality and
+physical Mac runtime have not been qualified for a release.
+
 ## Export the combined graph
 
 Authenticate all three native EMA checkpoints before exporting:
@@ -56,6 +85,11 @@ The graph includes analysis FFTs, recurrent networks, masks, inverse FFTs,
 overlap synthesis and residual Other. It has 13 explicit FP32 states; see the
 [interface](../models/README.md) for names, shapes, reset and EOF rules.
 Export uses copies and preserves source parameters, mode, gradients and RNG.
+
+For a vocal fine-tuning endpoint with 8,000 current-stage updates after 40,000
+parent updates, add `--vocals-updates 8000 --vocals-parent-updates 40000` while
+keeping `--expected-updates 40000` for the unchanged bass/drums endpoints.
+The export verifies both stages and records each stem's own update counts.
 
 The original PyTorch models generate reference audio; ONNX outputs are never
 used as their own oracle. The [native worker probe](../examples/native_independent/README.md)

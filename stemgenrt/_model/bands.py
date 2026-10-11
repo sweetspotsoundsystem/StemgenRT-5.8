@@ -137,3 +137,43 @@ class CausalBandBackbone(nn.Module):
         return (6 * 513 * band + layers * (count * 6 * band * band
                 + 2 * count * band * glob + 6 * glob * glob)
                 + count * band * band + self.sources * 4 * 513 * band)
+
+
+class LongAnalysisBandBackbone(CausalBandBackbone):
+    """One vocal mask with additional trailing 4096-point magnitude features.
+
+    Zero-initialized feature projections preserve an existing short-analysis
+    model at initialization. They learn from the same independent vocal loss.
+    """
+
+    def __init__(self, *, band_width=96, global_width=192, layers=2):
+        super().__init__(sources=1, band_width=band_width, global_width=global_width, layers=layers)
+        self.long_edges = tuple(min(edge * 4, 2049) for edge in self.edges)
+        self.long_groups = []
+        for index, (left, right) in enumerate(zip(self.long_edges, self.long_edges[1:])):
+            width = right - left
+            if self.long_groups and self.long_groups[-1][2] == width:
+                first, _, _ = self.long_groups[-1]
+                self.long_groups[-1] = first, index + 1, width
+            else:
+                self.long_groups.append((index, index + 1, width))
+        self.long_encoders = nn.ModuleList()
+        for first, last, width in self.long_groups:
+            module = GroupedAffine([nn.Linear(2 * width, band_width, bias=False) for _ in range(first, last)])
+            nn.init.zeros_(module.weight)
+            self.long_encoders.append(module)
+
+    def forward(self, features, local_hidden, global_hidden, long_features):
+        require(long_features is not None, "Long vocal analysis requires its past magnitude features")
+        batch, frames = features.shape[:2]
+        values = []
+        for module, (first, last, width) in zip(self.long_encoders, self.long_groups):
+            chunk = long_features[..., self.long_edges[first]:self.long_edges[last]]
+            chunk = chunk.reshape(batch, frames, 2, last - first, width)
+            values.append(module(chunk.permute(0, 1, 3, 2, 4).flatten(3)))
+        encoded = self.encode_features(features) + torch.cat(values, dim=2)
+        bands, local, glob, _ = self.temporal_context(encoded, local_hidden, global_hidden)
+        return self.decode_masks(bands), local, glob
+
+    def dense_macs(self):
+        return super().dense_macs() + 2 * 2049 * self.width

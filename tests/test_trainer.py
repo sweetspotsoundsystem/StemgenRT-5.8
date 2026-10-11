@@ -218,7 +218,7 @@ def test_resume_uses_restored_objects_cursor_identities_and_rng(harness, monkeyp
     model, optimizer, ema = endpoint(2)
     expected_config = asdict(replace(config, root_weights=corpus.root_weights))
     for key in ("model_family", "compact_hidden_size", "compact_layers", "band_width", "band_global_width", "band_layers",
-                "specialist_feature_n_fft", "specialist_waveform_basis"):
+                "specialist_feature_n_fft", "specialist_waveform_basis", "band_feature_n_fft"):
         expected_config.pop(key)
     expected_config.pop("target_source")
     expected_config.pop("past_filter")

@@ -10,16 +10,19 @@ from stemgenrt.band_export import export_fp32, make_export_copy
 from stemgenrt.checkpoint import state_sha256
 
 
-@pytest.mark.parametrize("sources", [("vocals",), SOURCE_ORDER])
-def test_full_fp32_onnx_continuous_audio_all_states_and_source_preservation(tmp_path, sources):
+@pytest.mark.parametrize("sources,feature_n_fft", [(("vocals",), 1024), (SOURCE_ORDER, 1024), (("vocals",), 4096)])
+def test_full_fp32_onnx_continuous_audio_all_states_and_source_preservation(tmp_path, sources, feature_n_fft):
     ort = pytest.importorskip("onnxruntime")
     onnx = pytest.importorskip("onnx")
     torch.manual_seed(42)
-    model = BandSeparator(sources=sources).train()
+    model = BandSeparator(sources=sources, feature_n_fft=feature_n_fft).train()
     # Exercise masks beyond their near-constant initialization.
     with torch.no_grad():
         for head in model.backbone.mask_heads:
             head.weight.normal_(std=.003)
+        if feature_n_fft == 4096:
+            for module in model.backbone.long_encoders:
+                module.weight.normal_(std=.01)
     fingerprint, rng = state_sha256(model.state_dict()), torch.get_rng_state()
     flags = [p.requires_grad for p in model.parameters()]
     path = tmp_path / "band.onnx"
@@ -27,7 +30,7 @@ def test_full_fp32_onnx_continuous_audio_all_states_and_source_preservation(tmp_
     assert model.training and flags == [p.requires_grad for p in model.parameters()]
     assert state_sha256(model.state_dict()) == fingerprint and torch.equal(torch.get_rng_state(), rng)
     graph = onnx.load(str(path))
-    assert sum(n.op_type == "DFT" for n in graph.graph.node) == 2
+    assert sum(n.op_type == "DFT" for n in graph.graph.node) == (3 if feature_n_fft == 4096 else 2)
     assert not any(n.op_type in ("GRU", "Loop", "Scan", "Softmax") for n in graph.graph.node)
     metadata = json.loads({m.key: m.value for m in graph.metadata_props}["stemgenrt.experimental"])
     assert metadata["architecture"]["source_order"] == list(sources)

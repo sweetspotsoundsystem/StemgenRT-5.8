@@ -42,6 +42,7 @@ def verify_training_archive(path, expected_sha256, *, root=ROOT):
     files = sorted((root / "stemgenrt").rglob("*.py")) + sorted((root / "stemgenrt").rglob("*.json"))
     files += [root / name for name in ("train_streaming.py", "pyproject.toml", "LICENSE",
         "configs/bass-specialist.json", "configs/drums-specialist.json")]
+    files += [path for path in sorted((root / "configs").glob("*.json")) if path not in files]
     require(files and all(file.is_file() and not file.is_symlink() for file in files), "Missing training sources")
     with tarfile.open(path) as archive:
         members = {}
@@ -58,7 +59,7 @@ def verify_training_archive(path, expected_sha256, *, root=ROOT):
     return {file.relative_to(root).as_posix(): sha(file) for file in files}
 
 
-def load_endpoint(path, digest, source, expected_updates):
+def load_endpoint(path, digest, source, expected_updates, *, expected_parent_updates=None):
     model = ck.load_model(path, expected_sha256=digest, role="ema")
     expected = (source,) if source != "joint" else ("drums", "bass", "vocals", "other")
     require(model.sources == expected, "Checkpoint source order differs")
@@ -67,6 +68,11 @@ def load_endpoint(path, digest, source, expected_updates):
     require(model.provenance.get("training_updates", 0) > 0, "Checkpoint has no recorded training updates")
     if expected_updates is not None:
         require(model.provenance["current_stage_updates"] == expected_updates, "Checkpoint is not the requested endpoint")
+    if expected_parent_updates is not None:
+        require(model.provenance.get("parent_training_updates", 0) == expected_parent_updates,
+                "Checkpoint parent training updates differ")
+    require(model.provenance["training_updates"] == model.provenance["current_stage_updates"]
+            + model.provenance.get("parent_training_updates", 0), "Checkpoint training-stage accounting differs")
     # The native runner deliberately checks the selected default architecture.
     require(model.band_width == (80 if source == "bass" else 96)
             and model.global_width == (160 if source == "bass" else 192) and model.layers == 2,
@@ -113,7 +119,10 @@ def prepare(args):
             digest = None
         else:
             digest = getattr(args, arm + "_sha256")
-            model = load_endpoint(getattr(args, arm + "_checkpoint"), digest, arm, args.expected_updates)
+            updates = getattr(args, arm + "_updates", None)
+            updates = args.expected_updates if updates is None else updates
+            model = load_endpoint(getattr(args, arm + "_checkpoint"), digest, arm, updates,
+                expected_parent_updates=getattr(args, arm + "_parent_updates", None))
         model.eval().requires_grad_(False)
         key = arm + ("-scratch-fp32" if scratch else "-ema-fp32")
         report = (export_specialist if arm in ("bass", "drums") else export_band)(model, output / "models" / (key + ".onnx"))
@@ -213,6 +222,8 @@ def main():
     for arm in ("vocals", "bass", "drums", "joint"):
         parser.add_argument("--" + arm + "-checkpoint", type=Path, required=arm == "vocals")
         parser.add_argument("--" + arm + "-sha256", required=arm == "vocals")
+        parser.add_argument("--" + arm + "-updates", type=int, help="Override expected current-stage updates for this model")
+        parser.add_argument("--" + arm + "-parent-updates", type=int, help="Expected updates before this model's current stage")
     args = parser.parse_args()
     for arm in ("bass", "drums", "joint"):
         path, digest = getattr(args, arm + "_checkpoint"), getattr(args, arm + "_sha256")
@@ -223,6 +234,10 @@ def main():
             parser.error("Choose both specialist checkpoints or --scratch-specialists")
     if args.expected_updates is not None and args.expected_updates <= 0:
         parser.error("--expected-updates must be positive")
+    for arm in ("vocals", "bass", "drums", "joint"):
+        updates, parent = getattr(args, arm + "_updates"), getattr(args, arm + "_parent_updates")
+        if (updates is not None and updates <= 0) or (parent is not None and parent < 0):
+            parser.error("Require positive stem updates and nonnegative parent updates")
     prepare(args)
 
 

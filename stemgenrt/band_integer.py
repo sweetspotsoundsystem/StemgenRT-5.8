@@ -27,6 +27,7 @@ def _digest(value):
 
 
 def source_matrices(model):
+    require(model.feature_n_fft == 1024, "Integer band export currently supports 1024-point analysis only")
     matrices = {}
     for name, module in model.named_modules():
         if isinstance(module, (nn.Linear, GroupedAffine)):
