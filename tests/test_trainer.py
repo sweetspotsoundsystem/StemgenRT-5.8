@@ -132,6 +132,7 @@ def test_current_config_selects_frozen_teacher_baseline():
 
 
 @pytest.mark.parametrize("changes", [
+    {"target_source": "lead"}, {"target_source": 2}, {"target_source": False},
     {"batch_size": 8}, {"microbatch_size": 17}, {"auxiliary_microbatch_size": 3},
     {"crop_samples": 132224}, {"data_start": 1}, {"warmup": 2000}, {"min_lr": 1e-3},
     {"device": "cpu", "precision": "bf16"}, {"root_weights": {"recordings": float("nan")}},
@@ -157,10 +158,24 @@ def test_fresh_stop_keeps_original_horizon_and_one_update_per_address(harness, t
     assert len(calls.saves) == 1
     assert calls.saves[0]["step"] == 2 and calls.saves[0]["next_sample_index"] == 352
     assert calls.saves[0]["config"]["steps"] == 6
+    assert "target_source" not in calls.saves[0]["config"]
     assert calls.saves[0]["data_identity"] == {
         "manifest_sha256": "training-bytes", "sampling_root_order": ["recordings"]}
     rows = [json.loads(line) for line in (tmp_path / "run/metrics.jsonl").read_text().splitlines()]
     assert [row["first_sample_index"] for row in rows] == [320, 336]
+
+
+def test_specialization_is_forwarded_and_persisted_for_exact_resume(harness, monkeypatch, tmp_path):
+    config, _, calls, update = harness
+    selected = replace(config, target_source="vocals")
+
+    def selected_update(*args, **kwargs):
+        assert kwargs["target_source"] == "vocals"
+        return update(*args, **kwargs)
+
+    monkeypatch.setattr(trainer, "grouped_update", selected_update)
+    trainer.train(selected, "train.json", tmp_path / "run", stop_after=2)
+    assert calls.saves[0]["config"]["target_source"] == "vocals"
 
 
 def test_teacher_sees_final_remix_and_persists_portable_identity(harness, monkeypatch, tmp_path):
@@ -202,6 +217,10 @@ def test_resume_uses_restored_objects_cursor_identities_and_rng(harness, monkeyp
     config, corpus, calls, _ = harness
     model, optimizer, ema = endpoint(2)
     expected_config = asdict(replace(config, root_weights=corpus.root_weights))
+    for key in ("model_family", "compact_hidden_size", "compact_layers", "band_width", "band_global_width", "band_layers",
+                "specialist_feature_n_fft", "specialist_waveform_basis"):
+        expected_config.pop(key)
+    expected_config.pop("target_source")
     expected_config.pop("past_filter")
     expected_config.pop("attention_window")
     expected_config.pop("extra_ordinary_primary_sdr_weight")  # Legacy baseline checkpoint identity.
@@ -219,6 +238,7 @@ def test_resume_uses_restored_objects_cursor_identities_and_rng(harness, monkeyp
 
     def restore(path, **kwargs):
         assert path == "previous.pt"
+        assert not any(key.startswith("specialist_") for key in kwargs["config"])
         assert kwargs == {"sha256": "previous-bytes", "config": expected_config,
                           "data_identity": {"manifest_sha256": "training-bytes",
                                             "sampling_root_order": ["recordings"]},

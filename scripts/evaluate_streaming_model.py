@@ -18,7 +18,7 @@ def main(argv=None):
     model = parser.add_mutually_exclusive_group(required=True)
     model.add_argument("--checkpoint", type=Path,
                        help="Native inference checkpoint or portable training checkpoint")
-    model.add_argument("--onnx", type=Path, help="Current eight-state ONNX export")
+    model.add_argument("--onnx", type=Path, help="Independent or legacy eight-state ONNX export")
     parser.add_argument("--sha256", required=True, help="Expected SHA-256 of the model file")
     parser.add_argument("--role", choices=("raw", "ema"),
                        help="Checkpoint weights; defaults to native declared role or training EMA")

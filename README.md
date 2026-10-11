@@ -1,25 +1,20 @@
 # StemgenRT-5.8
 
-This is a divergent fork of [Phil Wang's HS-TasNet implementation](https://github.com/lucidrains/HS-TasNet),
-developed for the [StemgenRT audio plugin](https://github.com/sweetspotsoundsystem/stemgen-rt).
-It has a different model and a breaking Python API: use `stemgenrt` and
-`StemgenRT58` instead of `hs_tasnet`. Use the upstream repository if you need
-the original HS-TasNet implementation. See [migration and provenance](docs/provenance.md).
+Model, training and inference code for [StemgenRT](https://github.com/sweetspotsoundsystem/stemgen-rt).
+Version **0.7.0** uses three independently trained models for **Drums, Bass and
+Vocals**, with **Other = mixture − Drums − Bass − Vocals**. Each model owns its
+parameters and recurrent state. The released graph combines all three in one
+self-contained FP32 ONNX file.
 
-Stereo streaming music separation into **drums, bass, vocals and other**.
-The current model combines spectral and waveform branches, causal attention,
-and recurrent branch memories. It uses **1024-sample analysis, 256-sample
-synthesis, 128-sample hops and eight explicit FP32 states** at 44.1 kHz.
-The **5.8** suffix identifies the latency variant: 128 samples of graph delay
-plus StemgenRT's 128-sample worker queue give 256 samples at 44.1 kHz, rounded
-to **5.8 ms of graph-plus-host algorithmic latency**, excluding audio-device
-latency. Model revisions and Python package versions are tracked separately
-from this latency suffix. Python package version **0.6.2** targets the model
-released with [StemgenRT v0.6.2](https://github.com/sweetspotsoundsystem/stemgen-rt/releases/tag/v0.6.2).
+Stereo 44.1 kHz audio is processed in 128-sample hops with 13 persistent states.
+The graph delays audio by 128 samples. The plug-in's worker reserve adds 128
+samples with a 128-sample host buffer: **256 samples, or 5.805 ms**, excluding
+hardware latency. Larger host buffers require additional reported reserve.
+The repository's 5.8 suffix describes this latency setting, not a version number.
 
-## Run the released model
+## Inference
 
-```bash
+```sh
 python -m pip install -e '.[streaming]'
 python scripts/download_streaming_model.py
 python examples/separate_streaming.py --help
@@ -29,70 +24,45 @@ python examples/separate_streaming.py --help
 import numpy as np
 from stemgenrt import StreamingSeparator
 
-separator = StreamingSeparator("models/hop128.onnx")
+separator = StreamingSeparator("models/independent.onnx")
 audio = np.zeros((2, 44100), dtype=np.float32)
 stems = separator.separate(audio)  # [4, 2, samples], aligned to the input
 ```
 
-The download is pinned by size and SHA-256 to the integer graph shared with
-[StemgenRT](https://github.com/sweetspotsoundsystem/stemgen-rt). ONNX Runtime
-1.26.0 runs on one CPU thread with KleidiAI disabled, matching that release's
-runtime settings. This Python API allocates memory and runs synchronously; use
-it from a worker for playback integration. See [model interface](models/README.md).
+The download verifies the immutable graph's size and SHA-256. ONNX Runtime
+1.26.0 uses one CPU thread with spinning and KleidiAI disabled. The synchronous
+Python API allocates memory; audio applications should use an inference worker.
+The plug-in provides that integration. See the [model interface](models/README.md).
 
-## Native model, training and export
+## Training and export
 
-Install the desired CPU or CUDA build of PyTorch 2.8.0 first, then:
+Matching model definitions, objectives, data augmentation, Adam/EMA recovery,
+evaluation and exporters are included. Install the appropriate PyTorch 2.8.0
+build and then `python -m pip install -e '.[training,onnx,test]'`.
 
-```bash
-python -m pip install -e '.[training,onnx,test]'
-```
+Train each source separately with `configs/vocals-independent.json`,
+`configs/bass-specialist.json` and `configs/drums-specialist.json`. Each released
+endpoint uses the parameter EMA after 40,000 updates. The exporter combines the
+three authenticated checkpoints without sharing weights or redistributing
+errors into the learned stems.
 
-```python
-import torch
-from stemgenrt import StemgenRT58, render_scored_context
+See [training and recovery](docs/training.md) and
+[architecture and export](docs/independent-stems.md). Datasets and native training
+checkpoints are supplied separately; the ONNX file does not contain optimizer,
+EMA history or data-cursor state needed to resume training.
 
-model = StemgenRT58()  # Untrained weights; this does not load the release.
-audio = torch.randn(1, 2, 768) * .02
-scored = render_scored_context(model, audio, warmup_samples=256, carry_state=True)
-scored.raw.square().mean().backward()
-```
+## Compatibility and limitations
 
-The native default uses 32 frames of causal attention and eight streaming states.
-The frozen research baseline is the teacher-assisted EMA checkpoint at **4.564402
-dB full-band SDR** on the fixed 14-track, 28-excerpt development panel. Its
-training recipe is retained in `configs/current-training.json`: BF16 learned
-operations, uniform track sampling, ordinary/auxiliary microbatches of 16/2,
-and teacher coefficient 1.0. The teacher is absent from inference.
+The plug-in remains named **StemgenRT** and retains its existing host identity.
+Version 0.7.0 replaces its previous joint model. Existing v0.6.2 Python inference
+is available with `--release v0.6.2` and that model's explicit checksum.
+`StemgenRT58` remains the legacy eight-state native class; use `IndependentStems`
+with `BandSeparator` and `SpecialistSeparator` for the new architecture.
 
-The released ONNX download is pinned to StemgenRT v0.6.2, which deploys the
-frozen research checkpoint and scores **4.564148 dB** on the same panel.
-The v0.6.1 product baseline remains the historical comparison and rollback
-reference; see [provenance](docs/provenance.md).
+The listening comparison favored cleaner vocals, better vocal silence and less
+vocal bleed in drums and bass. Other can contain stronger residual errors.
+Physical M4/M4 Pro sustained real-time performance remains unmeasured for this
+graph; the latency figure is not a CPU deadline guarantee.
 
-The maintained package includes deterministic crop/pitch/remix augmentation,
-the whole-group weighted source-view objective, Adam and EMA, lossless complete
-recovery, native/ONNX evaluation and verified export. Read the
-[training and evaluation guide](docs/training.md) for checkpoint requirements,
-portable manifests and commands. Native FP32 weights cannot be reconstructed
-losslessly from the released integer graph; provide a native checkpoint with
-its SHA-256 or explicitly start from scratch.
-
-## Supported source
-
-| Module | Responsibility |
-| --- | --- |
-| `stemgenrt.model` | Current native model, states and detached context |
-| `stemgenrt.data` | Portable manifests and deterministic training augmentation |
-| `stemgenrt.losses` | Whole-group objectives and one Adam/EMA update |
-| `stemgenrt.checkpoint` | Checkpoint verification and complete recovery |
-| `stemgenrt.trainer` | Portable finite training and resume |
-| `stemgenrt.evaluation` | Physical alignment and per-stem metrics |
-| `stemgenrt.export` | Current fixed-geometry ONNX export |
-| `stemgenrt.streaming` | Released and checksum-pinned custom ONNX inference |
-
-`StemgenRT58` supports the current eight-state architecture. Earlier models,
-experimental variants and draft papers remain in git history.
-
-The implementation builds on [HS-TasNet](https://arxiv.org/abs/2402.17701) and
-[Phil Wang's implementation](https://github.com/lucidrains/hs-tasnet).
+This is a divergent fork of [Phil Wang's HS-TasNet implementation](https://github.com/lucidrains/HS-TasNet),
+with a different model and Python API. See [provenance and migration](docs/provenance.md).

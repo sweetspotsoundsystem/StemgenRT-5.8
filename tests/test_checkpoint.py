@@ -77,7 +77,7 @@ def test_exact_next_update_after_portable_packed_restore(tmp_path, with_teacher)
         from stemgenrt import teacher
         specification = teacher.specification(1.)
         teacher.attach(candidate, specification)
-        config.update(teacher_coefficient=1., teacher_supervision=specification)
+        config.update(teacher_coefficient=1., teacher_supervision=specification, target_source="vocals")
         invalid = {**config, 'teacher_coefficient': .5}
         with pytest.raises(ValueError, match='teacher identity'):
             save_training_checkpoint(tmp_path / 'invalid.pt', candidate, optimizer, ema,
@@ -107,6 +107,8 @@ def test_exact_next_update_after_portable_packed_restore(tmp_path, with_teacher)
                                  data_identity={**data, "manifest_sha256": "c" * 64})
     with pytest.raises(ValueError, match="configuration"):
         load_training_checkpoint(path, config={**config, "lr": 1e-3}, data_identity=data)
+    with pytest.raises(ValueError, match="configuration"):
+        load_training_checkpoint(path, config={**config, "target_source": "bass"}, data_identity=data)
     with pytest.raises(ValueError, match="configuration"):
         load_training_checkpoint(path, config={**config, "track_sampling":
             "duration"}, data_identity=data)

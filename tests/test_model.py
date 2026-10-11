@@ -39,7 +39,8 @@ import sys
 import stemgenrt
 assert 'torch' not in sys.modules
 assert set(stemgenrt.__all__) == {
-    'StreamingSeparator', 'StemgenRT58', 'StreamingState', 'render_scored_context'}
+    'StreamingSeparator', 'IndependentStems', 'BandSeparator', 'SpecialistSeparator',
+    'StemgenRT58', 'StreamingState', 'render_scored_context'}
 from stemgenrt import StemgenRT58
 assert StemgenRT58.__module__ == 'stemgenrt.model'
 assert not any(name == 'research' or name.startswith('research.') for name in sys.modules)
@@ -50,7 +51,7 @@ assert not any(name == 'research' or name.startswith('research.') for name in sy
 def test_native_matches_checkpoint_geometry_and_preserves_released_interface():
     model = new_model().eval()
     release = json.loads((Path(__file__).resolve().parents[1]
-                          / "stemgenrt/streaming_models.json").read_text())["current"]
+                          / "stemgenrt/streaming_models.json").read_text())["v0.6.2"]
     state = model.initial_state(1)
     assert type(state) is StreamingState
     assert tuple(release["states"]) == state._fields[:8]

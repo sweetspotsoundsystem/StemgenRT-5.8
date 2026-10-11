@@ -16,14 +16,14 @@ MODEL_SHA256 = _MODELS["current"]["sha256"]
 SAMPLE_RATE = 44100
 HOP_SAMPLES = 128
 SOURCE_ORDER = ("drums", "bass", "vocals", "other")
-_STATES = {name: tuple(shape) for name, shape in _MODELS["current"]["states"].items()}
 
 
 class StreamingSeparator:
     """Separate float32 audio at 44.1 kHz, preserving every recurrent state.
 
-    The model has eight states and a 32-frame attention window. Custom
-    exports require an explicit checksum and the same state dimensions.
+    The current model has thirteen independent Drums/Bass/Vocals states.
+    The v0.6.2 eight-state model remains supported with its explicit checksum.
+    Custom exports require an explicit checksum and one of these exact ABIs.
 
     ``process_chunk`` accepts [2, 128] and returns [4, 2, 128], aligned to
     the previous input hop. Its first result after reset is ``None``.
@@ -56,7 +56,18 @@ class StreamingSeparator:
         self._session = ort.InferenceSession(
             str(path), sess_options=options, providers=["CPUExecutionProvider"]
         )
-        self._state_shapes = dict(_STATES)
+        actual_inputs = {node.name: tuple(node.shape) for node in self._session.get_inputs()}
+        pinned = next((model for model in _MODELS.values()
+                       if model["sha256"] == expected_sha256), None)
+        contracts = [pinned] if pinned is not None else list(_MODELS.values())
+        self._state_shapes = None
+        for contract in contracts:
+            states = {name: tuple(shape) for name, shape in contract["states"].items()}
+            if actual_inputs == {"audio_chunk": (1, 2, 128), **states}:
+                self._state_shapes = states
+                break
+        if self._state_shapes is None:
+            raise ValueError("Model streaming interface differs")
         inputs = {"audio_chunk": (1, 2, 128), **self._state_shapes}
         outputs = {"separated_chunk": (1, 4, 2, 128)}
         outputs.update({"next_" + name: shape for name, shape in self._state_shapes.items()})

@@ -7,7 +7,7 @@ import pytest
 import soundfile as sf
 
 from stemgenrt.evaluation import (EvaluationTrack, MetricConfig, SOURCE_ORDER,
-                                  evaluate_manifest, load_evaluation_manifest,
+                                  NativeRenderer, evaluate_manifest, load_evaluation_manifest,
                                   stream_track)
 from stemgenrt._evaluation.metrics import windowed_sdr
 
@@ -26,6 +26,29 @@ class DelayedRenderer:
         delayed = np.concatenate((self.previous, audio[:, :-128]), axis=-1)
         self.previous = audio[:, -128:].copy()
         return np.stack([0.25 * (delayed + self.lookahead * audio)] * 4)
+
+
+def test_native_renderer_uses_current_model_contract_and_carries_state(monkeypatch):
+    import torch
+    from stemgenrt.model import StemgenRT58
+    torch.set_num_threads(1)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(71)
+        model = StemgenRT58().eval().requires_grad_(False)
+    audio = np.random.default_rng(72).normal(0, .02, (2, 640)).astype('float32')
+    with torch.inference_mode():
+        expected = model.render(torch.from_numpy(audio[None])).deployed[0].numpy()
+    renderer = NativeRenderer(model)
+    actual = np.concatenate([renderer.render(audio[:, :128]), renderer.render(audio[:, 128:384]),
+                             renderer.render(audio[:, 384:])], axis=-1)
+    np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=0)
+    renderer.reset()
+    np.testing.assert_array_equal(renderer.render(audio), expected)
+    wrong = model.architecture_metadata
+    wrong['source_order'] = list(reversed(SOURCE_ORDER))
+    monkeypatch.setattr(StemgenRT58, 'architecture_metadata', property(lambda self: wrong))
+    with pytest.raises(ValueError, match='source order'):
+        NativeRenderer(model)
 
 
 def write_audio(path, audio):

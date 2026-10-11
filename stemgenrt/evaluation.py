@@ -107,14 +107,17 @@ class NativeRenderer:
     """Adapt the current PyTorch model to raw graph output coordinates.
 
     ``role`` selection (raw optimizer weights versus EMA weights) happens at
-    checkpoint loading. Both roles are scored using deployed residual Other.
+    checkpoint loading. Return the model's deployed outputs; this adapter does
+    not add residual Other to models that expose four independent learned heads.
     """
 
     def __init__(self, model):
         import torch
 
-        if (model.hop_samples != HOP or model.graph_alignment_samples != HOP
-                or tuple(model.source_order) != SOURCE_ORDER):
+        metadata = model.architecture_metadata
+        if (getattr(model, "hop_samples", metadata.get("hop_samples")) != HOP
+                or getattr(model, "graph_alignment_samples", metadata.get("graph_alignment_samples")) != HOP
+                or tuple(metadata.get("source_order", ())) != SOURCE_ORDER):
             raise ValueError("Unsupported native model geometry or source order")
         if any(module.training for module in model.modules()):
             raise ValueError("Place the complete model in eval mode before evaluation")

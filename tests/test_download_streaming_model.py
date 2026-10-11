@@ -34,13 +34,14 @@ def test_interrupted_download_leaves_no_partial_model(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_download_reuses_verified_current_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("release", ["current", "v0.6.2"])
+def test_download_reuses_verified_current_model(tmp_path, monkeypatch, release):
     import hashlib
 
     payload = b"current model bytes"
-    selected = {**model_download.MODELS["current"], "bytes": len(payload),
+    selected = {**model_download.MODELS[release], "bytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest()}
-    monkeypatch.setitem(model_download.MODELS, "current", selected)
+    monkeypatch.setitem(model_download.MODELS, release, selected)
     urls = []
 
     def response(url, **kwargs):
@@ -49,8 +50,8 @@ def test_download_reuses_verified_current_model(tmp_path, monkeypatch):
 
     monkeypatch.setattr(model_download, "urlopen", response)
     path = tmp_path / selected["filename"]
-    assert model_download.download(path) == path
+    assert model_download.download(path, release=release) == path
     assert path.read_bytes() == payload
-    assert model_download.download(path) == path
+    assert model_download.download(path, release=release) == path
     assert urls == [selected["url"]]
     assert list(tmp_path.iterdir()) == [path]

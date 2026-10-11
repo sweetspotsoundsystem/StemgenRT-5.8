@@ -1,6 +1,6 @@
 [project]
 name = "StemgenRT"
-version = "0.6.2"
+version = "0.7.0"
 description = "StemgenRT-5.8 streaming music separation, training and export"
 authors = [{ name = "Phil Wang", email = "lucidrains@gmail.com" }]
 maintainers = [{ name = "Axel Delafosse" }]
@@ -49,4 +49,7 @@ include = [
     "stemgenrt", "README.md", "LICENSE", "pyproject.toml", "docs", "CONTRIBUTING.md",
     "configs", "scripts", "tests", "models/README.md", "examples", "train_streaming.py",
 ]
-exclude = ["research", "runs", "models/*.onnx", "models/*.pt", "**/__pycache__", "**/*.pyc"]
+exclude = [
+    "research", "runs", "models/*.onnx", "models/*.pt", "**/__pycache__", "**/*.pyc",
+    "scripts/sync_research.py", "scripts/run_cpu_tests.py",
+]
