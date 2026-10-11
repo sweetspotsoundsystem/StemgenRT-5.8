@@ -27,7 +27,7 @@ python -m build
 python examples/native_independent/prepare.py \
   --output /allocated/new-native-packet \
   --sdk-root /path/to/onnxruntime-osx-arm64-1.26.0 \
-  --training-source dist/stemgenrt-0.6.2.tar.gz \
+  --training-source dist/stemgenrt-0.7.0.tar.gz \
   --training-source-sha256 SOURCE_ARCHIVE_SHA256 \
   --vocals-checkpoint /path/to/vocals/checkpoint.pt --vocals-sha256 VOCAL_SHA256 \
   --bass-checkpoint /path/to/bass/checkpoint.pt --bass-sha256 BASS_SHA256 \
@@ -37,8 +37,7 @@ python examples/native_independent/prepare.py \
 ```
 
 The joint control is optional. `--expected-updates` checks the current stage's
-endpoint when supplied. With a frozen research experiment, authenticate its
-completion proof and follow its checkpoint-selection policy before exporting.
+endpoint when supplied. Authenticate the selected checkpoint identities before exporting.
 
 For an architecture-only probe, replace the bass/drums checkpoint arguments
 with `--scratch-specialists`. It constructs their default untrained geometries

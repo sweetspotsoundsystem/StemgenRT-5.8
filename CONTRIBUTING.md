@@ -1,17 +1,10 @@
 # Contributing
 
-The released StemgenRT-5.8 model uses eight streaming states, 32 attention frames,
-1024-sample analysis, 256-sample synthesis and 128-sample hops at 44.1 kHz.
-Keep model changes together with their training, data, loss, checkpoint and
-export support. Changes to parameter names, state shapes or checkpoint formats
-must account for existing model files.
-
-This research branch also contains experimental compact, banded and independent
-bass/drums separators.
-Keep their training, recovery and export interfaces separate from the released
-model; see [compact research](docs/compact-research.md) and
-[independent stems](docs/independent-stems.md). Synthetic CPU checks
-do not qualify those models for a plugin release.
+StemgenRT 0.7.0 uses independent Drums/Bass/Vocals models with residual Other,
+13 states, stereo 44.1 kHz input and 128-sample hops. Keep model definitions
+together with matching training, data, objectives, recovery, evaluation and
+export support. Preserve the legacy eight-state API for existing checkpoints.
+See [the architecture guide](docs/independent-stems.md).
 
 ## Development setup
 
@@ -47,7 +40,7 @@ download URL, checksum and matching waveform fixtures together.
 
 Describe the user-visible change and validation in the pull request. Use a
 squash merge for a focused release change. Python package versions are separate
-from the model's 5.8 ms latency suffix; version 0.6.2 matches plugin v0.6.2.
+from the model's 5.8 ms latency suffix; version 0.7.0 matches plugin v0.7.0.
 
 
 ## Comparing a research update

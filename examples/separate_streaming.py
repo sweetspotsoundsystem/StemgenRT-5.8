@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("output_directory", type=Path)
-    parser.add_argument("--model", type=Path, default=Path("models/hop128.onnx"))
+    parser.add_argument("--model", type=Path, default=Path("models/independent.onnx"))
     parser.add_argument("--sha256", default=MODEL_SHA256, help="Expected model digest from the export verification report")
     args = parser.parse_args()
     audio, rate = sf.read(args.input, dtype="float32", always_2d=True)

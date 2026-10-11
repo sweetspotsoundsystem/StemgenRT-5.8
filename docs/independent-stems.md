@@ -1,156 +1,64 @@
-# Independent bass and drums research models
+# Independent stem architecture and export
 
-`stemgenrt.specialist.SpecialistSeparator` provides one stereo bass or drums
-estimate. These experimental architectures accompany the single-output vocal
-model in `stemgenrt.banded`; they do not change the released plugin or its
-eight-state interface. Constructor weights are untrained.
+StemgenRT 0.7.0 combines three separately trained single-output models through
+`IndependentStems(drums=..., bass=..., vocals=...)`. They receive the same input
+and share no learned parameters or recurrent state. The wrapper checks source
+order, ownership and timing. Other is the physical delayed mixture minus
+`((Drums + Bass) + Vocals)`.
 
-Bass uses 17 carrier bands with finer low-frequency partitions, width 80 local
-state, width 160 global state and two causal recurrent layers. A separate
-4096-point trailing Hann analysis adds stereo log-magnitude features to the
-1024-point complex carrier features. Its window ends at the same received
-sample as the carrier. Longer past context adds no future callbacks or synthesis
-delay. Each FFT is normalized over stereo channels and bins within its own
-current frame. `feature_n_fft=1024` disables the longer feature branch for a
-declared technical control.
+All components use stereo 44.1 kHz input, a 1024-point complex spectral carrier,
+256-sample synthesis and 128-sample hops. The graph emits the preceding input
+hop. Longer trailing analysis context adds past context without adding future
+callbacks or synthesis delay.
 
-Drums uses 20 carrier bands, local width 96, global width 192 and two recurrent
-layers. A 256-channel bias-free encoder and decoder produce a waveform residual
-from the most recent 256 samples, gated by causal global context. Spectral and
-waveform synthesis share the same physical output coordinates. A small nonzero
-decoder initialization permits gradients through the complete branch.
-`waveform_basis=0` disables this branch for a technical control.
+| Component | Implementation | Local/global widths | Bands | Parameters |
+| --- | --- | --- | --- | --- |
+| Vocals | `BandSeparator(sources=("vocals",))` | 96 / 192 | 20 | 2,720,484 |
+| Bass | `SpecialistSeparator(source="bass")` | 80 / 160 | 17 | 2,114,052 |
+| Drums | `SpecialistSeparator(source="drums")` | 96 / 192 | 20 | 3,032,036 |
 
-| Default component | Parameters | Dense MACs per 128-sample hop |
-| --- | ---: | ---: |
-| Vocal band model | 2,720,484 | 4,805,568 |
-| Bass specialist | 2,114,052 | 3,330,240 |
-| Drums specialist | 3,032,036 | 5,116,864 |
-| Combined | 7,866,572 | 13,252,672 |
+Each model has two recurrent layers. Vocal projections encode and decode each
+band independently, with shared temporal processing and causal global context.
+Bass uses finer low-frequency carrier partitions and a separate trailing
+4096-point Hann analysis for log-magnitude features. Each FFT normalizes its
+own current-frame stereo/bin features. Drums adds a 256-channel waveform
+encoder/decoder gated by causal global context, aligned with spectral synthesis.
+There is no normalization across output sources.
 
-The declared combined ceilings are 9 million parameters and 15 million dense
-MACs per hop. Counts exclude FFTs, normalization, nonlinear operations, copies
-and bias additions. They do not establish native M4 or M4 Pro performance.
-The graph emits audio aligned 128 samples behind its received input. A host's
-128-sample hop accumulation gives 256 samples, or 5.805 ms at 44.1 kHz.
+The total is 7,866,572 parameters and 13,252,672 dense learned MACs per hop.
+These counts exclude FFT, normalization, nonlinear operations, copies and bias
+additions. They are not measured CPU timings.
 
-## Training and exact recovery
+## Training and recovery
 
-Use `configs/bass-specialist.json` or `configs/drums-specialist.json` with the
-normal training CLI and `--scratch`. Both select `model_family="specialist"`,
-the named `target_source`, explicit geometry and FP32 training. BF16 and online
-teacher supervision are rejected. The configurations declare 40,000 updates,
-16 ordinary examples, 4/2 ordinary/auxiliary microbatches, six-second input
-contexts, detached warmup, a 500-update warmup to 3e-4, cosine decay to 3e-5 and
-parameter EMA decay 0.995. Every checkpoint includes the complete configuration,
-raw weights, Adam, EMA, RNG streams and absolute crop cursor.
+Use the three configurations described in [training](training.md). The vocal
+configuration selects `model_family="banded"` and `target_source="vocals"`;
+bass and drums select `model_family="specialist"` and their named source.
+All train in FP32 with no teacher. Each target has a single output and its own
+absence/preservation auxiliary views, loss reduction, Adam and parameter EMA.
+Checkpoints retain all state needed for exact continuation.
 
-```bash
-python train_streaming.py --config configs/bass-specialist.json \
-  --manifest data/train.json --validation-manifest data/valid.json \
-  --scratch --output runs/bass-first
-```
+## Export the combined graph
 
-The configurations retain the comparison experiment's ordinary crop addresses,
-vocal-activity sampling probability, pitch/tempo recipe and remix seed. Ordinary
-inputs can therefore be checked against its joint control by their recorded
-hashes. Keeping the existing vocal-activity sampling bias is intentional for
-this comparison; it is not a claim that this is the optimal bass/drums sampler.
-Use the same ordered, checksum-bound manifests to reproduce actual input bytes.
-
-For these single-output models, auxiliary view 0 removes the selected target
-and view 1 retains only that target, including the entire warmup context.
-Targets are then reduced to the model's single output without padding. The
-existing whole-group example/window denominators, view weights `[1,0.25]` and
-outer coefficient 0.1 are retained. Every microbatch replays its complete-group
-output derivatives exactly before one Adam and EMA update. The historical
-four-output source-specific objective retains its original vocal auxiliary
-views, preserving its recovery recipe.
-
-`stemgenrt-independent-specialist-training-v1` is a separate checkpoint schema.
-Use `--resume` and the saved SHA256 in a new output directory for complete
-continuation. The source, branch geometry, data identity and schedule cannot
-change on resume. Unsaved committed journal updates can be verified with the
-existing `--replay-journal` and `--replay-sha256` interface.
-
-## Export and combined evaluation
-
-`stemgenrt.specialist_export.export_fp32(model, new_path)` exports a complete
-FP32 one-hop ONNX graph, including both analysis FFTs when enabled, masks,
-inverse FFT, overlap synthesis and the drum waveform branch. Bass has four
-states: audio history, local hidden state, global hidden state and spectral
-numerator tail. Drums with a waveform branch has a fifth waveform numerator
-tail. Keep all exported states between callbacks. Export creates a separate
-copy and preserves the source model's mode, gradients, weights and RNG.
-
-`stemgenrt.independent.IndependentStems(drums=..., bass=..., vocals=...)`
-combines three frozen, genuinely single-output models. Each receives the same
-audio and owns independent state. Other is the physical mixture minus the
-three estimates. The wrapper rejects shared parameter objects, source-order
-mismatches and incompatible timing. It supports `NativeRenderer` evaluation
-through partial final hops and EOF. It does not redistribute errors into the
-learned stems.
-
-`stemgenrt.bass_replacement.BassEvaluationHybrid(anchored, bass)` supports a
-completed bass evaluation before an independent drums model is available.
-Pass a frozen four-output system as `anchored`, for example
-`VocalReplacement(parent, vocals)`, and the authenticated final bass EMA as
-`bass`. It preserves the anchored drums and vocals sample for sample, uses the
-bass model's literal output, and computes Other from the delayed physical
-mixture. Each child retains independent streaming state. Overall and Other
-scores describe this partial hybrid; final three-model quality still requires
-the complete `IndependentStems` system. Keep the declared endpoint, data and
-bass quality thresholds fixed when changing evaluation order.
-
-`stemgenrt.source_views.stream_source_views` renders target-only and
-target-absent recordings continuously from the track origin. Each view keeps
-independent state through unscored prefixes and gaps, with padding only at EOF.
-The helper records input hashes, physical alignment and mixture closure.
-`score_source_views` reports native leakage levels and target preservation;
-silent model outputs remain included whenever the input window is active.
-
-CPU checks cover future independence, all 128 impulse phases, grouped/literal
-streaming, detached warmup, finite gradients, exact checkpoint continuation,
-named absence/preservation views, combined residual alignment and continuous
-ONNX waveform/state agreement. Candidate quality, combined listening and actual
-native M4/M4 Pro runtime must be evaluated before deployment. Current vocal
-anchor evidence is from a single seed; multi-seed repeatability is not established.
-
-The [native worker probe](../examples/native_independent/README.md) builds a
-reproducible M4/M4 Pro packet with matching training sources. It checks complete
-graphs and states, physical residual Other, exact input history and paced worker
-deadlines. Architecture probes with untrained bass/drums weights remain separate
-from final trained-model and plugin qualification.
-
-
-## Combined ONNX for experimental plug-in testing
-
-Export three authenticated, trained EMA endpoints as one self-contained FP32
-ONNX graph. This keeps all three models independent and computes
-`Other = delayed_input - ((Drums + Bass) + Vocals)` inside the graph:
+Authenticate all three native EMA checkpoints before exporting:
 
 ```sh
-python scripts/export_independent_model.py --output /allocated/independent-export \
+python scripts/export_independent_model.py --output /path/to/new-export \
   --drums-checkpoint /path/to/drums.pt --drums-sha256 DRUMS_SHA256 \
   --bass-checkpoint /path/to/bass.pt --bass-sha256 BASS_SHA256 \
   --vocals-checkpoint /path/to/vocals.pt --vocals-sha256 VOCALS_SHA256 \
   --expected-updates 40000
 ```
 
-The directory contains `model.onnx`, its complete interface/provenance in
-`model.json`, the three checkpoint identities, source bindings, and independent
-native PyTorch fixtures. The graph accepts `[1,2,128]` float32 stereo at 44.1 kHz
-and emits `[1,4,2,128]` in Drums, Bass, Vocals, Other order. Thirteen prefixed
-states carry each child's complete history, recurrent state and synthesis tails.
-Initialize every state to zero and feed back every returned state unchanged.
-The first output is invalid pre-roll. Each later call emits the preceding input
-hop. Pad a partial final hop once, submit exactly one zero hop, and crop the
-render to the original sample count. The graph delay is 128 samples; the
-plug-in's worker reserve adds 128 at a matching 128-sample host buffer.
+The output contains `model.onnx`, full architecture/interface metadata,
+checkpoint identities, source bindings and independent native PyTorch fixtures.
+The graph includes analysis FFTs, recurrent networks, masks, inverse FFTs,
+overlap synthesis and residual Other. It has 13 explicit FP32 states; see the
+[interface](../models/README.md) for names, shapes, reset and EOF rules.
+Export uses copies and preserves source parameters, mode, gradients and RNG.
 
-The released eight-state plug-in cannot load this graph. Use the matched
-experimental 13-state adapter and its own model identity contract. The source
-model quality score does not qualify this ONNX graph or M4 performance. The
-[native worker probe](../examples/native_independent/README.md) compares separate
-sessions with the combined graph, checks every output/state against PyTorch,
-and measures physical M4/M4 Pro worker timing before plug-in/DAW testing.
+The original PyTorch models generate reference audio; ONNX outputs are never
+used as their own oracle. The [native worker probe](../examples/native_independent/README.md)
+also checks every returned state before measuring worker timing on a physical
+Mac. The plug-in's complete callback/worker qualification and DAW playback
+remain separate tests. The graph's historical export schema is retained.

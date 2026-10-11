@@ -1,6 +1,84 @@
 {
   "current": {
-    "filename": "hop128.onnx",
+    "filename": "independent.onnx",
+    "release": "v0.7.0",
+    "url": "https://media.githubusercontent.com/media/sweetspotsoundsystem/stemgen-rt/96b1cae1c3908e3966ba3b4940f60ecdd32f8bfa/model/model.onnx",
+    "sha256": "0a49388dd2a47986ab9a161c8764c22853b4d601c188ac052eb530f076d513c7",
+    "bytes": 31946241,
+    "states": {
+      "drums_audio_history": [
+        1,
+        2,
+        896
+      ],
+      "drums_local_hidden": [
+        2,
+        20,
+        96
+      ],
+      "drums_global_hidden": [
+        2,
+        1,
+        192
+      ],
+      "drums_spectral_numerator_tail": [
+        1,
+        1,
+        2,
+        128
+      ],
+      "drums_waveform_numerator_tail": [
+        1,
+        1,
+        2,
+        128
+      ],
+      "bass_audio_history": [
+        1,
+        2,
+        3968
+      ],
+      "bass_local_hidden": [
+        2,
+        17,
+        80
+      ],
+      "bass_global_hidden": [
+        2,
+        1,
+        160
+      ],
+      "bass_spectral_numerator_tail": [
+        1,
+        1,
+        2,
+        128
+      ],
+      "vocals_audio_history": [
+        1,
+        2,
+        896
+      ],
+      "vocals_local_hidden": [
+        2,
+        20,
+        96
+      ],
+      "vocals_global_hidden": [
+        2,
+        1,
+        192
+      ],
+      "vocals_spectral_numerator_tail": [
+        1,
+        1,
+        2,
+        128
+      ]
+    }
+  },
+  "v0.6.2": {
+    "filename": "hop128-v0.6.2.onnx",
     "url": "https://media.githubusercontent.com/media/sweetspotsoundsystem/stemgen-rt/61df8f4aa1555ef110308d01ea92b54ace770979/model/model.onnx",
     "sha256": "77164d6a581fafb2a31f53fd8ffde44c07cf618472952a4cdba14e68dda3b8b9",
     "bytes": 37529132,

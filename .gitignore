@@ -226,3 +226,9 @@ verification-tmp/
 # Local research history, machine-specific experiments and generated run artifacts.
 /research/
 /runs/
+
+# Private manuscripts and experiment artifacts
+/paper/
+/papers/
+/research/
+/runs/
