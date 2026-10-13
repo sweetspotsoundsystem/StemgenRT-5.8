@@ -226,6 +226,7 @@ def test_resume_uses_restored_objects_cursor_identities_and_rng(harness, monkeyp
     expected_config.pop("extra_ordinary_primary_sdr_weight")  # Legacy baseline checkpoint identity.
     expected_config.pop("teacher_coefficient")
     expected_config.pop("teacher_checkpoint")
+    expected_config.pop("auxiliary_weight")
     expected_config.pop("track_sampling")
     before_python, before_numpy, before_torch = random.getstate(), np.random.get_state(), torch.get_rng_state()
     generator = torch.Generator().manual_seed(173)
@@ -418,3 +419,19 @@ def test_resume_verifies_unsaved_updates_before_journal_or_checkpoint(harness, m
         assert calls.saves[-1]['metadata']['replay_verification'] == result['replay_verification']
         assert result['schedule_steps'] == 6 and result['resumed_from_step'] == 2
     assert (original / 'metrics.jsonl').read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("weight", [.1, 1.])
+def test_auxiliary_weight_reaches_updates_and_checkpoint_config(harness, monkeypatch, tmp_path, weight):
+    config, _, calls, update = harness
+    def selected_update(*args, **kwargs):
+        assert kwargs["auxiliary_weight"] == weight
+        return update(*args, **kwargs)
+    monkeypatch.setattr(trainer, "grouped_update", selected_update)
+    trainer.train(replace(config, auxiliary_weight=weight), "train.json", tmp_path / "run", stop_after=2)
+    saved = calls.saves[0]["config"]
+    assert saved.get("auxiliary_weight", .1) == weight
+    assert ("auxiliary_weight" in saved) == (weight != .1)
+    for invalid in (-.1, 1.01, float("nan"), float("inf"), True, "1"):
+        with pytest.raises(ValueError, match="auxiliary_weight"):
+            replace(config, auxiliary_weight=invalid).validate()

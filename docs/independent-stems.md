@@ -113,3 +113,30 @@ Requirements remain at least +0.10 dB each for vocals and physical residual
 Other, positive paired track medians, and the existing silence/preservation
 limits. The configuration is an experiment recipe; quality, listening and
 export qualification are recorded separately when completed.
+
+
+## Source-view weight experiment
+
+`configs/vocals-auxiliary-ablation.json` tests an outer `auxiliary_weight` of
+1.0 against the completed 0.1 higher-rate continuation. It starts from the same
+released 40,000-update vocal EMA with fresh Adam and EMA, and uses the same
+8,000 updates, data addresses, augmentation, 3e-4 to 3e-5 schedule and original
+1024-point architecture. Only the coefficient changes. The existing sixteen
+ordinary examples and two full-context source views remain identical. The
+instrumental/vocals-only multipliers stay `[1, 0.25]`, with their original joint
+denominators. Ordinary reconstruction, primary SDR and absence weights remain
+unchanged. This tests whether stronger controlled-view supervision improves
+preservation and leakage while retaining separation gains; improvement is not
+assumed. It is an experimental recipe, not a replacement for released weights.
+
+The coefficient is validated, forwarded to complete-group gradient replay,
+recorded in each update policy, and saved in the checkpoint configuration.
+Resuming with a different value fails configuration authentication. Omitting
+it retains 0.1 and the configuration identity of existing checkpoints.
+
+Retain complete checkpoints every 1,000 updates and score the fixed training
+and validation crop panels. Only the final 8,000-update EMA is eligible for the
+full development decision. Vocals and physical residual Other must each gain
+at least 0.10 dB, both paired track medians must improve, and all existing
+silence and preservation checks must pass. Drums and bass stay frozen. There
+is no automatic extension, intermediate checkpoint selection, or test-set use.

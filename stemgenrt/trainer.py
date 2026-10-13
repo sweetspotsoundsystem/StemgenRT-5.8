@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from .checkpoint import ParameterEMA, load_model, load_training_checkpoint, save_training_checkpoint, state_sha256
 from .data import (AbsoluteIndexSampler, CROP_SAMPLES, WARMUP_SAMPLES, audio_sha,
                    batch_recipes, load_manifest, make_dataset, remix_batch, worker_init, policy as data_policy)
-from .losses import grouped_update, _teacher_weight, source_index
+from .losses import grouped_update, _teacher_weight, _auxiliary_weight, source_index
 from .model import StemgenRT58
 from .compact import CompactSeparator, SOURCE_ORDER
 from .banded import BandSeparator, extend_vocal_analysis
@@ -63,6 +63,7 @@ class TrainingConfig:
     device: str = "cuda"
     workers: int = 2
     extra_ordinary_primary_sdr_weight: float = .2
+    auxiliary_weight: float = .1
     teacher_coefficient: float = 0.
     teacher_checkpoint: str | None = None
 
@@ -112,6 +113,7 @@ class TrainingConfig:
         if self.track_sampling != "uniform":
             raise ValueError("track_sampling must be uniform")
         _teacher_weight(self.teacher_coefficient)
+        _auxiliary_weight(self.auxiliary_weight)
         if self.teacher_coefficient and (not self.teacher_checkpoint
                 or self.extra_ordinary_primary_sdr_weight != .2):
             raise ValueError("Teacher training requires its checkpoint and extra_ordinary_primary_sdr_weight=0.2")
@@ -249,6 +251,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         config_dict.pop("track_sampling")
     if config.extra_ordinary_primary_sdr_weight == 0:
         config_dict.pop("extra_ordinary_primary_sdr_weight")
+    if config.auxiliary_weight == .1:
+        config_dict.pop("auxiliary_weight")
     config_dict.pop("teacher_checkpoint")
     teacher_provider = None
     if config.teacher_coefficient:
@@ -379,6 +383,7 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     warmup_samples=config.warmup_samples, ordinary_microbatch=config.microbatch_size,
                     auxiliary_microbatch=config.auxiliary_microbatch_size,
                     extra_ordinary_primary_sdr_weight=config.extra_ordinary_primary_sdr_weight,
+                    auxiliary_weight=config.auxiliary_weight,
                     target_source=config.target_source, **teacher_options)
                 del teacher_options
                 step += 1
