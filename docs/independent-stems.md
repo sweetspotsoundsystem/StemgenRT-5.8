@@ -96,3 +96,20 @@ used as their own oracle. The [native worker probe](../examples/native_independe
 also checks every returned state before measuring worker timing on a physical
 Mac. The plug-in's complete callback/worker qualification and DAW playback
 remain separate tests. The graph's historical export schema is retained.
+
+## Bounded vocal learning-rate comparison
+
+`configs/vocals-lr-ablation.json` continues the released 1024-point vocal EMA
+for 8,000 updates with fresh Adam and EMA. It matches `vocals-finetune.json`
+except for a tenfold learning-rate schedule: 3e-4 to 3e-5, with the same
+100-update warmup, crop addresses, batch sizes, augmentation and objectives.
+Drums and bass stay fixed. Initialize with `--checkpoint`, `--sha256`, and
+`--role ema`; use `--resume` only for exact recovery within this stage.
+
+The research comparison retains complete checkpoints every 1,000 updates and
+uses a fixed training/validation crop panel to inspect the learning curve.
+Only the final 8,000-update EMA is eligible for the development decision.
+Requirements remain at least +0.10 dB each for vocals and physical residual
+Other, positive paired track medians, and the existing silence/preservation
+limits. The configuration is an experiment recipe; quality, listening and
+export qualification are recorded separately when completed.
