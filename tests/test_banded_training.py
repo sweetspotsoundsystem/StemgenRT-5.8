@@ -97,3 +97,36 @@ def test_banded_training_config_rejects_silent_recipe_changes():
                     {"band_feature_n_fft": 4096, "model_family": "specialist", "target_source": "bass"}):
         with pytest.raises(ValueError):
             replace(base, **changes).validate()
+
+
+def test_stronger_auxiliary_training_resumes_bit_exact_and_rejects_weight_changes(tmp_path):
+    torch.manual_seed(211)
+    model = BandSeparator(band_width=16, global_width=16, layers=1).train()
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, foreach=False)
+    ema = ParameterEMA(model)
+    config = {"model_family": "banded", "band_width": 16, "band_global_width": 16, "band_layers": 1,
+              "target_source": "vocals", "steps": 3, "batch_size": 16, "data_start": 0,
+              "precision": "fp32", "auxiliary_weight": 1.}
+    def advance(model, optimizer, ema, step):
+        targets = .02 * torch.randn(16, 4, 2, 128 + 44160)
+        targets[:3, 2] = 0
+        row = losses.grouped_update(model, optimizer, ema, targets.sum(1), targets,
+            step=step, warmup_samples=128, ordinary_microbatch=4, auxiliary_microbatch=1,
+            target_source="vocals", extra_ordinary_primary_sdr_weight=.2, auxiliary_weight=1.)
+        assert row["accumulation_policy"]["auxiliary_weight"] == 1.
+        return row
+    advance(model, optimizer, ema, 1)
+    path = tmp_path / "auxiliary.pt"
+    saved = save_training_checkpoint(path, model, optimizer, ema, step=1, next_sample_index=16,
+        config=config, data_identity={"train": "fixed"})
+    expected_row = advance(model, optimizer, ema, 2)
+    expected = (state_sha256(model.state_dict()), tree_fingerprint(optimizer.state_dict()),
+                tree_fingerprint(ema.state_dict(model)), tree_fingerprint(checkpoint._rng_state()))
+    restored = load_training_checkpoint(path, sha256=saved["sha256"], config=config,
+                                       data_identity={"train": "fixed"})
+    actual_row = advance(restored.model, restored.optimizer, restored.ema, 2)
+    actual = (state_sha256(restored.model.state_dict()), tree_fingerprint(restored.optimizer.state_dict()),
+              tree_fingerprint(restored.ema.state_dict(restored.model)), tree_fingerprint(checkpoint._rng_state()))
+    assert actual_row == expected_row and actual == expected
+    with pytest.raises(ValueError, match="configuration changed"):
+        load_training_checkpoint(path, config={**config, "auxiliary_weight": .1})

@@ -340,7 +340,7 @@ def auxiliary_objective(raw, deployed, targets, mixture, *, weights=VIEW_WEIGHTS
 
     Reconstruction keeps its original example denominator of two. Direct SDR
     and absence keep the active/absent counts and eligible-stem counts of both
-    views. The outer group coefficient of 0.1 is applied by the accumulator.
+    views. The outer group coefficient (default 0.1) is applied by the accumulator.
     Explicit weights support CPU controls; production uses the fixed default.
     """
     _require(raw.ndim == 4 and raw.shape == deployed.shape == targets.shape
@@ -376,13 +376,19 @@ def _teacher_weight(value):
     return value
 
 
+def _auxiliary_weight(value):
+    if type(value) not in (float, int) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError("auxiliary_weight must be finite and between 0 and 1")
+    return float(value)
+
+
 def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None,
-           auxiliary_target_source=None):
+           auxiliary_target_source=None, auxiliary_weight=AUXILIARY_WEIGHT):
     source_index(target_source)
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
     result = {"version": VERSION, "loss": "Unchanged ordinary16 plus 0.1 joint source-view2 with view multipliers [1,0.25]",
-            "ordinary_examples": 16, "auxiliary_examples": 2, "auxiliary_weight": AUXILIARY_WEIGHT,
+            "ordinary_examples": 16, "auxiliary_examples": 2, "auxiliary_weight": _auxiliary_weight(auxiliary_weight),
             "view_indices": list(VIEW_INDICES), "view_weights": list(VIEW_WEIGHTS),
             "direct_sdr_weight": SDR_WEIGHT,
             "capture": "Grad-enabled microbatch renders, detached output coordinates only; release each neural graph",
@@ -413,17 +419,23 @@ def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., targ
             result.update(version="target-source-grouped-update-v1",
                 auxiliary_source_selection="Remove the selected source in view 0; retain only it in view 1",
                 auxiliary_target_source=target_source)
+    if auxiliary_weight != AUXILIARY_WEIGHT:
+        result.update(parent_auxiliary_objective_version=result["version"],
+            version="configurable-auxiliary-grouped-update-v1",
+            loss="Unchanged ordinary objective plus weighted joint source views with multipliers [1,.25]",
+            production_recipe_selected=False)
     return result
 
 
 def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_samples,
                      check_continue=None, verify_input_gradients=False, progress=None,
                      extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None,
-                     target_source=None):
+                     target_source=None, auxiliary_weight=AUXILIARY_WEIGHT):
     from .model import render_scored_context
 
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
+    auxiliary_weight = _auxiliary_weight(auxiliary_weight)
     targets, loss_target_source = model_targets(model, targets, target_source)
     if targets.shape[1] == 1 and teacher:
         raise ValueError("Single-output experiment has no online teacher")
@@ -460,7 +472,7 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
     ordinary_options = {"extra_ordinary_primary_sdr_weight": extra} if group == "ordinary" else {}
     terms = loss_function(raw, deployed, targets[..., warmup_samples:], mixture[..., warmup_samples:],
                           target_source=loss_target_source, **ordinary_options)
-    value = terms.total if group == "ordinary" else AUXILIARY_WEIGHT * terms.total
+    value = terms.total if group == "ordinary" else auxiliary_weight * terms.total
     details = {}
     if teacher:
         from ._losses.teacher import contribution as teacher_contribution
@@ -476,8 +488,8 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
     if group == "auxiliary":
         details = {
             "view_contribution_multipliers": list(VIEW_WEIGHTS),
-            "weighted_view_losses": (AUXILIARY_WEIGHT * terms.weighted_view_contributions).detach().cpu().tolist(),
-            "original_weight_view_losses": (AUXILIARY_WEIGHT * terms.unweighted_view_contributions).detach().cpu().tolist(),
+            "weighted_view_losses": (auxiliary_weight * terms.weighted_view_contributions).detach().cpu().tolist(),
+            "original_weight_view_losses": (auxiliary_weight * terms.unweighted_view_contributions).detach().cpu().tolist(),
         }
     active, absent = terms.active_window_counts.cpu().tolist(), terms.absent_window_counts.cpu().tolist()
     derivatives = tuple(v.detach() for v in torch.autograd.grad(value, (raw, deployed)))
@@ -529,7 +541,8 @@ def model_targets(model, targets, target_source):
 def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordinary_microbatch=4,
                       auxiliary_microbatch=2, check_continue=None, after_group=None,
                       verify_input_gradients=False, progress=None, extra_ordinary_primary_sdr_weight=0.,
-                      teacher_coefficient=0., teacher_targets=None, target_source=None):
+                      teacher_coefficient=0., teacher_targets=None, target_source=None,
+                      auxiliary_weight=AUXILIARY_WEIGHT):
     teacher = _teacher_weight(teacher_coefficient)
     single_source = tuple(model.architecture_metadata["source_order"]) == (target_source,)
     auxiliary_mix, auxiliary_targets = source_views(mixture_cpu, targets_cpu,
@@ -546,7 +559,8 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
             verify_input_gradients=verify_input_gradients, progress=progress,
             extra_ordinary_primary_sdr_weight=extra_ordinary_primary_sdr_weight,
             teacher_coefficient=teacher if group == "ordinary" else 0.,
-            teacher_targets=teacher_targets if group == "ordinary" else None, target_source=target_source)
+            teacher_targets=teacher_targets if group == "ordinary" else None, target_source=target_source,
+            auxiliary_weight=auxiliary_weight)
         reduction = getattr(groups, group)
         _require(row["active_windows"] == reduction.active.cpu().tolist()
                 and row["absent_windows"] == reduction.absent.cpu().tolist(), "Canonical group activity differs")
@@ -559,7 +573,8 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
 def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, extra_ordinary_primary_sdr_weight=0.,
-                   teacher_coefficient=0., teacher_targets=None, target_source=None):
+                   teacher_coefficient=0., teacher_targets=None, target_source=None,
+                      auxiliary_weight=AUXILIARY_WEIGHT):
     """Accumulate both independently normalized groups, then clip/update once.
 
     Optional callbacks run only before the final update, and may raise to stop
@@ -592,7 +607,8 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     rows = accumulate_groups(model, mixture_cpu, targets_cpu, warmup_samples=warmup_samples,
         ordinary_microbatch=ordinary_microbatch, auxiliary_microbatch=auxiliary_microbatch,
         check_continue=check_continue, after_group=after_group, extra_ordinary_primary_sdr_weight=extra,
-        teacher_coefficient=teacher, teacher_targets=teacher_targets, target_source=target_source)
+        teacher_coefficient=teacher, teacher_targets=teacher_targets, target_source=target_source,
+        auxiliary_weight=auxiliary_weight)
     gradient_norms = {}
     for name, parameter in model.named_parameters():
         _require(parameter.grad is not None and bool(torch.isfinite(parameter.grad).all()),
@@ -612,7 +628,8 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     auxiliary_source = (target_source if target_source in ("bass", "drums")
                        and tuple(model.architecture_metadata["source_order"]) == (target_source,) else None)
     return {"step": step, "accumulation_policy": policy(extra_ordinary_primary_sdr_weight=extra,
-            teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source),
+            teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source,
+            auxiliary_weight=auxiliary_weight),
             "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
             "gradient_norm_before_clip": float(norm), "parameter_gradient_norms": gradient_norms, **endpoint}
 
@@ -621,7 +638,7 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, share_gru_weights=True,
                    extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None,
-                   target_source=None):
+                   target_source=None, auxiliary_weight=AUXILIARY_WEIGHT):
     """Complete both loss groups, then clip, advance Adam and update EMA once.
 
     CUDA BF16 replay shares exactly equal saved GRU transposes by default.
@@ -633,6 +650,7 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     from ._losses.saved_gru import share_saved_gru_weights
 
     source_index(target_source)
+    auxiliary_weight = _auxiliary_weight(auxiliary_weight)
     parameter = next(model.parameters())
     sharing = (share_gru_weights and parameter.is_cuda
                and getattr(model, "training_precision", "fp32") == "bf16")
@@ -642,4 +660,5 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
             warmup_samples=warmup_samples, ordinary_microbatch=ordinary_microbatch,
             auxiliary_microbatch=auxiliary_microbatch, check_continue=check_continue,
             after_group=after_group, extra_ordinary_primary_sdr_weight=extra_ordinary_primary_sdr_weight,
-            teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets, target_source=target_source)
+            teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets, target_source=target_source,
+            auxiliary_weight=auxiliary_weight)

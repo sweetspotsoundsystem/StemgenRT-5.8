@@ -140,10 +140,11 @@ def test_silence_and_auxiliary_input_validation():
         losses.auxiliary_objective(raw.flip(0), deployed.flip(0), targets.flip(0), mixture.flip(0))
 
 
+@pytest.mark.parametrize("auxiliary_weight", [.1, 1.])
 @pytest.mark.parametrize("extra", [0., .2], ids=["baseline", "primary_sdr_ablation"])
 @pytest.mark.parametrize("teacher_coefficient", [0., 1.])
 @pytest.mark.parametrize("target_source", [None, "vocals"])
-def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, extra, teacher_coefficient, target_source):
+def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, extra, teacher_coefficient, target_source, auxiliary_weight):
     """Compare replay to an independently retained tiny neural graph.
 
     This isolates the accumulation protocol without a costly full-size model;
@@ -170,8 +171,11 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
         assert carry_state
         # This fixture intentionally has no path from warmup to the gradient.
         scored = audio[..., warmup_samples:]
-        raw = model(scored.transpose(1, 2).double()).float().transpose(1, 2).reshape(len(audio), 4, 2, -1)
-        deployed = raw + .03 * scored[:, None]
+        # Match output-coordinate layout across retained and captured graphs.
+        # Equal values with different strides can reassociate FP32 reductions;
+        # that scalar rounding is independent of the VJP being tested.
+        raw = model(scored.transpose(1, 2).double()).float().transpose(1, 2).reshape(len(audio), 4, 2, -1).contiguous()
+        deployed = (raw + .03 * scored[:, None]).contiguous()
         last_coordinates = raw.detach(), deployed.detach()
         return SimpleNamespace(raw=raw, deployed=deployed, initial_state_detached=True, flush_hops=1)
 
@@ -183,7 +187,7 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
     teacher_targets = .03 * torch.randn(targets[..., 128:].shape, generator=generator)
     auxiliary_mix, auxiliary_targets = losses.source_views(mixture, targets)
     inputs = (("ordinary", mixture, targets, losses.objective, 1.),
-              ("auxiliary", auxiliary_mix, auxiliary_targets, losses.auxiliary_objective, .1))
+              ("auxiliary", auxiliary_mix, auxiliary_targets, losses.auxiliary_objective, auxiliary_weight))
     reference_coordinates = {}
     reference_loss = 0.
     for group, audio, truth, objective, coefficient in inputs:
@@ -209,7 +213,7 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
                                    verify_input_gradients=True, progress=compare_capture_coordinates,
                                    extra_ordinary_primary_sdr_weight=extra,
                                    teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets,
-                                   target_source=target_source)
+                                   target_source=target_source, auxiliary_weight=auxiliary_weight)
     for parameter, reference in zip(model.parameters(), expected, strict=True):
         torch.testing.assert_close(parameter.grad, reference, atol=1e-6, rtol=1e-5)
     assert abs(sum(row["weighted_loss"] for row in rows.values()) - float(reference_loss.detach())) < 3e-6
@@ -348,3 +352,19 @@ def test_grouped_update_has_one_commit_boundary_and_can_retry_interruption(monke
     assert result["ema_parameters_sha256"] != original_ema
     assert len(optimizer.state) == 40
     assert all(state["step"].item() == 1 for state in optimizer.state.values())
+
+
+@pytest.mark.parametrize("invalid", [-.1, 1.01, float("nan"), float("inf"), True, "1"])
+def test_auxiliary_coefficient_rejects_invalid_values(invalid):
+    with pytest.raises(ValueError, match="auxiliary_weight"):
+        losses.policy(auxiliary_weight=invalid)
+
+
+def test_default_auxiliary_policy_preserves_legacy_identity():
+    assert losses.policy() == losses.policy(auxiliary_weight=.1)
+    legacy = losses.policy(target_source="vocals", extra_ordinary_primary_sdr_weight=.2)
+    selected = losses.policy(target_source="vocals", extra_ordinary_primary_sdr_weight=.2, auxiliary_weight=1.)
+    assert selected["auxiliary_weight"] == 1.
+    assert selected["parent_auxiliary_objective_version"] == legacy["version"]
+    assert selected["view_weights"] == legacy["view_weights"] == [1., .25]
+    assert selected["ordinary_primary_sdr_weight"] == legacy["ordinary_primary_sdr_weight"] == .4
