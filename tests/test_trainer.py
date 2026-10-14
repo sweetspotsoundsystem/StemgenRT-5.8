@@ -421,7 +421,7 @@ def test_resume_verifies_unsaved_updates_before_journal_or_checkpoint(harness, m
     assert (original / 'metrics.jsonl').read_bytes() == original_bytes
 
 
-@pytest.mark.parametrize("weight", [.1, 1.])
+@pytest.mark.parametrize("weight", [0., .1, 1.])
 def test_auxiliary_weight_reaches_updates_and_checkpoint_config(harness, monkeypatch, tmp_path, weight):
     config, _, calls, update = harness
     def selected_update(*args, **kwargs):

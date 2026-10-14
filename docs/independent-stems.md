@@ -140,3 +140,20 @@ full development decision. Vocals and physical residual Other must each gain
 at least 0.10 dB, both paired track medians must improve, and all existing
 silence and preservation checks must pass. Drums and bass stay frozen. There
 is no automatic extension, intermediate checkpoint selection, or test-set use.
+
+## Zero-auxiliary diagnostic
+
+`configs/vocals-zero-auxiliary.json` sets the outer auxiliary coefficient to
+0.0. It is otherwise identical to the higher-rate 0.1 continuation: the same
+released 40,000-update vocal EMA initialization, fresh Adam/EMA, 8,000 updates,
+data addresses, augmentation and 3e-4 to 3e-5 learning-rate schedule. The runtime
+still constructs the same ordinary and auxiliary groups; the auxiliary scalar
+and its gradient contribution are zero. The ordinary absence penalty remains.
+
+This diagnostic measures separation with the auxiliary contribution removed.
+It is not a released model or a mathematical upper bound on alternative
+objectives. All nine development checks are still measured, including leakage
+and preservation; their outcomes are not assumed in advance. Retain the eight
+complete milestone checkpoints and fixed crop curves, and evaluate only the
+final EMA on the full development panel. There is no automatic extension or
+promotion of this diagnostic arm.
