@@ -10,16 +10,16 @@ from stemgenrt.specialist_export import export_fp32, make_export_copy
 from stemgenrt.checkpoint import state_sha256
 
 
-@pytest.mark.parametrize("source", ["bass", "drums"])
-def test_specialist_full_onnx_stream_matches_every_state_without_mutating_source(tmp_path, source):
+@pytest.mark.parametrize("source,waveform_basis", [("bass", 0), ("bass", 128), ("drums", 256)])
+def test_specialist_full_onnx_stream_matches_every_state_without_mutating_source(tmp_path, source, waveform_basis):
     ort = pytest.importorskip("onnxruntime")
     onnx = pytest.importorskip("onnx")
     torch.manual_seed(842)
-    model = SpecialistSeparator(source=source).train()
+    model = SpecialistSeparator(source=source, waveform_basis=waveform_basis).train()
     with torch.no_grad():
         for head in model.backbone.mask_heads:
             head.weight.normal_(std=.003)
-        if source == "drums":
+        if waveform_basis:
             model.waveform_decode.weight.mul_(25)
     fingerprint, rng = state_sha256(model.state_dict()), torch.get_rng_state()
     flags = [p.requires_grad for p in model.parameters()]

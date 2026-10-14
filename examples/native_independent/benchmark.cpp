@@ -96,8 +96,8 @@ struct Graph {
   std::vector<const char*> inputNames, outputNames;
   explicit Graph(Ort::Env& env, const char* path, const Ort::SessionOptions& options) : session(env, path, options) {
     count = session.GetInputCount();
-    require((count == 5 || count == 6 || count == 14) && session.GetOutputCount() == count,
-            "Expected a selected child model or the 13-state combined graph");
+    require((count == 5 || count == 6 || count == 14 || count == 15) && session.GetOutputCount() == count,
+            "Expected a selected child model or a 13/14-state combined graph");
     Ort::AllocatorWithDefaultOptions allocator;
     const auto type = session.GetOutputTypeInfo(0);
     const auto audio = type.GetTensorTypeAndShapeInfo().GetShape();
@@ -106,13 +106,18 @@ struct Graph {
     const auto historyType = session.GetInputTypeInfo(1);
     const auto history = historyType.GetTensorTypeAndShapeInfo().GetShape();
     std::vector<int64_t> expectedHistory, expectedLocal, expectedGlobal;
-    if (count == 14) {
+    if (count == 14 || count == 15) {
       require(audio[1] == 4, "The combined graph must emit four stems");
       kind = "independent";
     } else if (count == 6) {
-      require(audio[1] == 1, "The drums waveform specialist has one output");
-      kind = "drums";
-      expectedHistory = {1, 2, 896}; expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
+      require(audio[1] == 1, "The waveform specialist has one output");
+      if (history == std::vector<int64_t>{1, 2, 3968}) {
+        kind = "bass";
+        expectedHistory = {1, 2, 3968}; expectedLocal = {2, 17, 80}; expectedGlobal = {2, 1, 160};
+      } else {
+        kind = "drums";
+        expectedHistory = {1, 2, 896}; expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
+      }
     } else if (history == std::vector<int64_t>{1, 2, 3968}) {
       require(audio[1] == 1, "Long-analysis models must have one output");
       const auto localType = session.GetInputTypeInfo(2);
@@ -132,8 +137,8 @@ struct Graph {
     std::vector<std::vector<int64_t>> inputShapes{
       {1, 2, 128}, expectedHistory, expectedLocal, expectedGlobal, {1, audio[1], 2, 128}};
     if (count == 6) inputShapes.push_back({1, 1, 2, 128});
-    if (count == 14) {
-      const auto vocalHistoryType = session.GetInputTypeInfo(10);
+    if (count == 14 || count == 15) {
+      const auto vocalHistoryType = session.GetInputTypeInfo(count == 15 ? 11 : 10);
       const auto vocalHistory = vocalHistoryType.GetTensorTypeAndShapeInfo().GetShape();
       require(vocalHistory == std::vector<int64_t>{1, 2, 896}
               || vocalHistory == std::vector<int64_t>{1, 2, 3968}, "Unsupported vocal history geometry");
@@ -142,6 +147,11 @@ struct Graph {
         {1, 1, 2, 128}, vocalHistory, {2, 20, 96}, {2, 1, 192}, {1, 1, 2, 128}};
       inputNames.assign(combinedInputs.begin(), combinedInputs.end());
       outputNames.assign(combinedOutputs.begin(), combinedOutputs.end());
+      if (count == 15) {
+        inputShapes.insert(inputShapes.begin() + 10, std::vector<int64_t>{1, 1, 2, 128});
+        inputNames.insert(inputNames.begin() + 10, "bass_waveform_numerator_tail");
+        outputNames.insert(outputNames.begin() + 10, "next_bass_waveform_numerator_tail");
+      }
     } else {
       inputNames.assign(inputs.begin(), inputs.begin() + count);
       outputNames.assign(outputs.begin(), outputs.begin() + count);
