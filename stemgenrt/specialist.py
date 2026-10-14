@@ -1,7 +1,7 @@
 """Independent causal bass and drums research models with complete source identity.
 
 Bass uses finer low-frequency bands and optional longer past-only magnitude
-features. Drums adds an optional short waveform residual. Both synthesize on
+features. Both specialists support an optional short waveform residual and synthesize on
 the existing 128-sample alignment and 128-sample hop; neither emits other stems.
 Untrained architectures and arithmetic budgets do not imply quality or native
 runtime qualification. The released model and vocal checkpoint schema remain
@@ -9,6 +9,7 @@ separate.
 """
 from __future__ import annotations
 
+import copy
 from typing import NamedTuple
 
 import torch
@@ -20,6 +21,7 @@ from .banded import BandSeparator, BandState
 from .model import ModelOutput
 
 VERSION = "causal-independent-stem-specialists-v1"
+BASS_WAVEFORM_VERSION = "causal-independent-bass-waveform-v1"
 BASS_BAND_EDGES = (0, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 160, 256, 384, 513)
 
 
@@ -97,8 +99,8 @@ class SpecialistSeparator(BandSeparator):
         waveform_basis = (0 if bass else 256) if waveform_basis is None else waveform_basis
         require(type(feature_n_fft) is int and feature_n_fft in (1024, 4096)
                 and (bass or feature_n_fft == 1024), "Long analysis is a bass-only feature")
-        require(type(waveform_basis) is int and (waveform_basis == 0 if bass else 0 <= waveform_basis <= 512),
-                "Waveform residual is supported only for drums, with at most 512 basis channels")
+        require(type(waveform_basis) is int and 0 <= waveform_basis <= 512,
+                "Waveform residual requires at most 512 basis channels")
         self.sources = (source,)
         self.band_width, self.global_width, self.layers = band_width, global_width, layers
         self.feature_n_fft, self.waveform_basis = feature_n_fft, waveform_basis
@@ -106,7 +108,7 @@ class SpecialistSeparator(BandSeparator):
         self.state_type = WaveformBandState if waveform_basis else BandState
         self.state_names = self.state_type._fields
         self.training_precision = "fp32"
-        self.provenance = {"architecture_version": VERSION, "training_updates": 0,
+        self.provenance = {"architecture_version": BASS_WAVEFORM_VERSION if bass and waveform_basis else VERSION, "training_updates": 0,
                            "quality_measured": False, "initialization": "scratch"}
         analysis, synthesis = asymmetric_windows()
         self.register_buffer("analysis_window", analysis)
@@ -124,7 +126,7 @@ class SpecialistSeparator(BandSeparator):
 
     @property
     def architecture_metadata(self):
-        return {"version": VERSION, "source_order": list(self.sources),
+        return {"version": BASS_WAVEFORM_VERSION if self.sources == ("bass",) and self.waveform_basis else VERSION, "source_order": list(self.sources),
                 "band_width": self.band_width, "global_width": self.global_width, "layers": self.layers,
                 "band_edges": list(self.backbone.edges), "band_packing": "independent equal-width groups",
                 "sample_rate": 44100, "feature_n_fft": self.feature_n_fft, "carrier_n_fft": 1024,
@@ -211,3 +213,36 @@ class SpecialistSeparator(BandSeparator):
         result["dense_macs_per_hop"] += self.waveform_basis * (1024 + self.global_width)
         result["dense_macs_per_second"] = result["dense_macs_per_hop"] * 44100 / 128
         return result
+
+
+def extend_bass_waveform(model, *, waveform_basis=128):
+    """Initialize a new training stage with an exactly zero bass correction.
+
+    Copy all existing tensors and flags without changing the source or RNG.
+    Fresh Adam and EMA belong to the caller; this conversion is not a resume.
+    """
+    require(type(model) is SpecialistSeparator and model.sources == ("bass",)
+            and model.waveform_basis == 0, "Require a bass specialist without a waveform branch")
+    require(type(waveform_basis) is int and 1 <= waveform_basis <= 512, "Invalid added waveform basis")
+    require(all(t.dtype == torch.float32 and bool(torch.isfinite(t).all()) for t in model.state_dict().values()),
+            "Require finite FP32 source tensors")
+    with torch.random.fork_rng(devices=[]):
+        upgraded = SpecialistSeparator(source="bass", band_width=model.band_width,
+            global_width=model.global_width, layers=model.layers,
+            feature_n_fft=model.feature_n_fft, waveform_basis=waveform_basis)
+    with torch.no_grad():
+        upgraded.waveform_decode.weight.zero_()
+    source, merged = model.state_dict(), upgraded.state_dict()
+    require(all(name in merged and merged[name].shape == value.shape for name, value in source.items()),
+            "Existing bass parameter geometry changed")
+    merged.update(source)
+    upgraded.load_state_dict(merged, strict=True)
+    upgraded.to(next(model.parameters()).device).train(model.training)
+    flags = {name: value.requires_grad for name, value in model.named_parameters()}
+    for name, value in upgraded.named_parameters():
+        value.requires_grad_(flags.get(name, any(flags.values())))
+    upgraded.training_precision = model.training_precision
+    upgraded.provenance = {**copy.deepcopy(model.provenance),
+        "architecture_version": BASS_WAVEFORM_VERSION,
+        "waveform_initialization": "Copied existing bass parameters; zero waveform decoder"}
+    return upgraded

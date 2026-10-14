@@ -30,12 +30,12 @@ def test_source_views_remove_and_preserve_the_named_stem_without_mutation(source
             assert torch.equal(views[0, i], targets[14, i])
 
 
-@pytest.mark.parametrize("source", ["bass", "drums"])
-def test_specialist_checkpoint_restores_identical_next_update_and_inference(tmp_path, source):
+@pytest.mark.parametrize("source,basis", [("bass", 0), ("bass", 16), ("drums", 16)])
+def test_specialist_checkpoint_restores_identical_next_update_and_inference(tmp_path, source, basis):
     random.seed(16)
     np.random.seed(16)
     torch.manual_seed(16)
-    model = SpecialistSeparator(source=source, band_width=16, global_width=32, layers=2).train()
+    model = SpecialistSeparator(source=source, band_width=16, global_width=32, layers=2, waveform_basis=basis).train()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, foreach=False)
     ema = ParameterEMA(model)
     config = {"model_family": "specialist", "band_width": 16, "band_global_width": 32, "band_layers": 2,

@@ -3,12 +3,12 @@
 This example prepares a self-contained packet for physical Apple M4 and M4 Pro
 machines. It measures complete FP32 graphs, input/output/state copies, and the
 combined physical residual Other on one paced inference worker. It compares
-three separate sessions with a single combined graph containing all 13 states. The probe does
+three separate sessions with a single combined graph containing all 13 released states or 14 with the experimental bass waveform branch. The probe does
 not measure a plugin queue, audio driver or DAW callback.
 
 The selected geometries are the default vocal/joint band models and independent
 bass/drums specialists. Bass retains 3968 samples of analysis history. Drums has
-a fifth waveform state. All emit one 128-sample-delayed hop at 44.1 kHz; adding
+a fifth waveform state. The optional bass waveform branch adds its own fifth state; the probe validates this declared interface as well. All emit one 128-sample-delayed hop at 44.1 kHz; adding
 the host's 128-sample accumulation gives the intended 256-sample system delay.
 
 ## Prepare a packet

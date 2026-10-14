@@ -9,7 +9,7 @@ from stemgenrt.specialist import SpecialistSeparator
 
 
 @pytest.mark.parametrize("source,feature_n_fft,waveform_basis", [
-    ("bass", 4096, 0), ("bass", 1024, 0), ("drums", 1024, 32), ("drums", 1024, 0)])
+    ("bass", 4096, 0), ("bass", 4096, 128), ("bass", 1024, 0), ("drums", 1024, 32), ("drums", 1024, 0)])
 def test_specialist_grouping_future_independence_and_state(source, feature_n_fft, waveform_basis):
     torch.manual_seed(184)
     model = SpecialistSeparator(source=source, band_width=16, global_width=32, layers=2,
@@ -96,7 +96,7 @@ def test_budget_counts_the_executed_operations(source, parameters, macs):
 
 
 def test_specialist_geometry_rejects_other_sources_and_mixed_variants():
-    for kwargs in ({"source": "vocals"}, {"source": "other"}, {"source": "bass", "waveform_basis": 16},
+    for kwargs in ({"source": "vocals"}, {"source": "other"}, {"source": "bass", "waveform_basis": 513},
                    {"source": "drums", "feature_n_fft": 4096}, {"source": "bass", "feature_n_fft": 2048}):
         with pytest.raises(ValueError):
             SpecialistSeparator(**kwargs)

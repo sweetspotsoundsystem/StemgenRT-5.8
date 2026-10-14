@@ -161,3 +161,30 @@ target-absent and target-only leakage/preservation checks.
 `scripts/export_streaming_model.py` retain the v0.6.2 eight-state training and
 export path. Existing compact, joint and integer interfaces remain for checkpoint
 compatibility and regression tests; they are not the 0.7.0 deployment model.
+
+
+### Bass waveform continuation experiment
+
+`configs/bass-control-finetune.json` and `configs/bass-waveform-finetune.json`
+define a matched 8,000-update continuation from the released 40,000-update bass
+EMA. Both use fresh Adam and EMA, FP32, the same ordered training examples,
+augmentation and ordinary/auxiliary objectives, and a 3e-4 to 3e-5 learning-rate
+schedule. The waveform arm adds 128 basis channels to the existing specialist.
+The trainer copies the original tensors and initializes the new decoder to zero,
+so the initial bass audio is unchanged. Exact resume restores the saved model,
+Adam, EMA, data cursor and RNG; it does not repeat the conversion.
+
+The optional bass branch has five streaming states and produces a fourteen-state
+combined graph. The released model remains thirteen-state. The candidate system
+has 8,018,252 parameters and 13,404,224 dense MACs per 128-sample hop, excluding
+FFT and elementwise work. Its intended 256-sample latency is unchanged.
+Architecture support and arithmetic counts do not establish improved separation
+or M4/M4 Pro runtime performance.
+
+The bounded comparison uses final EMA checkpoints, fixed released drums and
+vocals, and physical residual Other. Qualification requires at least +0.1 dB in
+bass full-band SDR, bass 20–250 Hz SDR and Other SDR, positive paired median
+bass/Other gains, and retained SIR, absence and bass-only preservation limits.
+Attribution to the added branch additionally requires +0.05 dB bass SDR over
+matched continuation and the declared protection checks. These configurations
+are experimental; they do not replace released weights.

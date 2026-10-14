@@ -193,3 +193,18 @@ def test_matching_training_archive_is_required(tmp_path,mutation):
     else:
         with pytest.raises(ValueError,match='Training archive'):
             verify_training_archive(path,digest,root=root)
+
+
+@pytest.mark.parametrize("basis,accepted", [(0, True), (128, True), (64, False)])
+def test_native_builder_accepts_the_declared_bass_branch_geometry(monkeypatch, basis, accepted):
+    from examples.native_independent import prepare
+    from stemgenrt.specialist import SpecialistSeparator
+    model = SpecialistSeparator(source="bass", waveform_basis=basis)
+    model.provenance.update(training_updates=48000, current_stage_updates=8000, parent_training_updates=40000)
+    monkeypatch.setattr(prepare.ck, "load_model", lambda *a, **kw: model)
+    if accepted:
+        assert prepare.load_endpoint("synthetic", "digest", "bass", 8000,
+            expected_parent_updates=40000) is model
+    else:
+        with pytest.raises(ValueError, match="branch geometry"):
+            prepare.load_endpoint("synthetic", "digest", "bass", 8000, expected_parent_updates=40000)

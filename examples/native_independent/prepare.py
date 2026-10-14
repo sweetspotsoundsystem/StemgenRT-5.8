@@ -79,7 +79,7 @@ def load_endpoint(path, digest, source, expected_updates, *, expected_parent_upd
             "This probe requires the selected default geometry")
     if source in ("bass", "drums"):
         require(model.feature_n_fft == (4096 if source == "bass" else 1024)
-                and model.waveform_basis == (0 if source == "bass" else 256), "Specialist branch geometry differs")
+                and model.waveform_basis in ((0, 128) if source == "bass" else (256,)), "Specialist branch geometry differs")
     return model
 
 
@@ -177,7 +177,8 @@ def prepare(args):
         "provenance": combined_report["provenance"], "weight_sha256": combined_report["weight_sha256"],
         "budget": combined.compute_budget(), "interface": combined_report["interface"],
         "reference": str(combined_reference.relative_to(output)), "reference_sha256": sha(combined_reference),
-        "reference_hops": 192, "reference_kind": "Native IndependentStems FP32; all outputs and 13 states"}
+        "reference_hops": 192, "reference_kind": "Native IndependentStems FP32; all outputs and "
+            + str(len(combined_report["interface"]["input_names"]) - 1) + " states"}
     cases["combined_single_graph_fp32"] = [combined_key]
     names = list(cases)
     interpretation = (f"{len(names)} order-balanced segments per case, not a continuous endurance run. "

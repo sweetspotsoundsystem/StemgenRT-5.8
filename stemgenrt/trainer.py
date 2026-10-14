@@ -25,7 +25,7 @@ from .losses import grouped_update, _teacher_weight, _auxiliary_weight, source_i
 from .model import StemgenRT58
 from .compact import CompactSeparator, SOURCE_ORDER
 from .banded import BandSeparator, extend_vocal_analysis
-from .specialist import SpecialistSeparator
+from .specialist import SpecialistSeparator, extend_bass_waveform
 
 
 @dataclass(frozen=True)
@@ -102,8 +102,6 @@ class TrainingConfig:
             if (self.specialist_waveform_basis is not None and
                     (type(self.specialist_waveform_basis) is not int or not 0 <= self.specialist_waveform_basis <= 512)):
                 raise ValueError("Invalid specialist waveform basis")
-            if self.target_source == "bass" and self.specialist_waveform_basis not in (None, 0):
-                raise ValueError("Waveform residual is a drums-only feature")
         elif self.specialist_feature_n_fft is not None or self.specialist_waveform_basis is not None:
             raise ValueError("Specialist geometry cannot configure another model family")
         if self.past_filter is not False:
@@ -289,6 +287,10 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     and config.band_feature_n_fft == 4096 and type(model) is BandSeparator
                     and model.feature_n_fft == 1024):
                 model = extend_vocal_analysis(model)
+            if (config.model_family == "specialist" and config.target_source == "bass"
+                    and config.specialist_waveform_basis and type(model) is SpecialistSeparator
+                    and model.sources == ("bass",) and model.waveform_basis == 0):
+                model = extend_bass_waveform(model, waveform_basis=config.specialist_waveform_basis)
             from .checkpoint import _validate_geometry_config
             _validate_geometry_config(config_dict, model)
         elif config.model_family == "compact":
