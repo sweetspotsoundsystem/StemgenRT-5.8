@@ -140,7 +140,7 @@ def test_silence_and_auxiliary_input_validation():
         losses.auxiliary_objective(raw.flip(0), deployed.flip(0), targets.flip(0), mixture.flip(0))
 
 
-@pytest.mark.parametrize("auxiliary_weight", [.1, 1.])
+@pytest.mark.parametrize("auxiliary_weight", [0., .1, 1.])
 @pytest.mark.parametrize("extra", [0., .2], ids=["baseline", "primary_sdr_ablation"])
 @pytest.mark.parametrize("teacher_coefficient", [0., 1.])
 @pytest.mark.parametrize("target_source", [None, "vocals"])
@@ -210,7 +210,7 @@ def test_output_vjp_replay_matches_full_graph_parameter_gradients(monkeypatch, e
 
     rows = losses.accumulate_groups(model, mixture, targets, warmup_samples=128,
                                    ordinary_microbatch=4, auxiliary_microbatch=1,
-                                   verify_input_gradients=True, progress=compare_capture_coordinates,
+                                   verify_input_gradients=auxiliary_weight != 0., progress=compare_capture_coordinates,
                                    extra_ordinary_primary_sdr_weight=extra,
                                    teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets,
                                    target_source=target_source, auxiliary_weight=auxiliary_weight)

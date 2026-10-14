@@ -99,21 +99,25 @@ def test_banded_training_config_rejects_silent_recipe_changes():
             replace(base, **changes).validate()
 
 
-def test_stronger_auxiliary_training_resumes_bit_exact_and_rejects_weight_changes(tmp_path):
+@pytest.mark.parametrize("weight", [0., 1.])
+def test_auxiliary_training_resumes_bit_exact_and_rejects_weight_changes(tmp_path, weight):
     torch.manual_seed(211)
     model = BandSeparator(band_width=16, global_width=16, layers=1).train()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, foreach=False)
     ema = ParameterEMA(model)
     config = {"model_family": "banded", "band_width": 16, "band_global_width": 16, "band_layers": 1,
               "target_source": "vocals", "steps": 3, "batch_size": 16, "data_start": 0,
-              "precision": "fp32", "auxiliary_weight": 1.}
+              "precision": "fp32", "auxiliary_weight": weight}
     def advance(model, optimizer, ema, step):
         targets = .02 * torch.randn(16, 4, 2, 128 + 44160)
         targets[:3, 2] = 0
         row = losses.grouped_update(model, optimizer, ema, targets.sum(1), targets,
             step=step, warmup_samples=128, ordinary_microbatch=4, auxiliary_microbatch=1,
-            target_source="vocals", extra_ordinary_primary_sdr_weight=.2, auxiliary_weight=1.)
-        assert row["accumulation_policy"]["auxiliary_weight"] == 1.
+            target_source="vocals", extra_ordinary_primary_sdr_weight=.2, auxiliary_weight=weight)
+        assert row["accumulation_policy"]["auxiliary_weight"] == weight
+        if weight == 0.:
+            assert row["groups"]["auxiliary"]["weighted_loss"] == 0.
+            assert row["groups"]["auxiliary"]["weighted_view_losses"] == [0., 0.]
         return row
     advance(model, optimizer, ema, 1)
     path = tmp_path / "auxiliary.pt"
