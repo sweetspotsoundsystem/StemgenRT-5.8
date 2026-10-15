@@ -111,12 +111,16 @@ struct Graph {
       kind = "independent";
     } else if (count == 6) {
       require(audio[1] == 1, "The waveform specialist has one output");
-      if (history == std::vector<int64_t>{1, 2, 3968}) {
+      const auto localType = session.GetInputTypeInfo(2);
+      const auto local = localType.GetTensorTypeAndShapeInfo().GetShape();
+      if (local == std::vector<int64_t>{2, 17, 80}) {
         kind = "bass";
         expectedHistory = {1, 2, 3968}; expectedLocal = {2, 17, 80}; expectedGlobal = {2, 1, 160};
       } else {
+        require(history == std::vector<int64_t>{1, 2, 896}
+                || history == std::vector<int64_t>{1, 2, 3968}, "Unsupported drums history geometry");
         kind = "drums";
-        expectedHistory = {1, 2, 896}; expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
+        expectedHistory = history; expectedLocal = {2, 20, 96}; expectedGlobal = {2, 1, 192};
       }
     } else if (history == std::vector<int64_t>{1, 2, 3968}) {
       require(audio[1] == 1, "Long-analysis models must have one output");
@@ -138,11 +142,13 @@ struct Graph {
       {1, 2, 128}, expectedHistory, expectedLocal, expectedGlobal, {1, audio[1], 2, 128}};
     if (count == 6) inputShapes.push_back({1, 1, 2, 128});
     if (count == 14 || count == 15) {
+      require(history == std::vector<int64_t>{1, 2, 896}
+              || history == std::vector<int64_t>{1, 2, 3968}, "Unsupported combined drums history geometry");
       const auto vocalHistoryType = session.GetInputTypeInfo(count == 15 ? 11 : 10);
       const auto vocalHistory = vocalHistoryType.GetTensorTypeAndShapeInfo().GetShape();
       require(vocalHistory == std::vector<int64_t>{1, 2, 896}
               || vocalHistory == std::vector<int64_t>{1, 2, 3968}, "Unsupported vocal history geometry");
-      inputShapes = {{1, 2, 128}, {1, 2, 896}, {2, 20, 96}, {2, 1, 192},
+      inputShapes = {{1, 2, 128}, history, {2, 20, 96}, {2, 1, 192},
         {1, 1, 2, 128}, {1, 1, 2, 128}, {1, 2, 3968}, {2, 17, 80}, {2, 1, 160},
         {1, 1, 2, 128}, vocalHistory, {2, 20, 96}, {2, 1, 192}, {1, 1, 2, 128}};
       inputNames.assign(combinedInputs.begin(), combinedInputs.end());

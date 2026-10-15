@@ -9,7 +9,7 @@ from stemgenrt.specialist import SpecialistSeparator
 
 
 @pytest.mark.parametrize("source,feature_n_fft,waveform_basis", [
-    ("bass", 4096, 0), ("bass", 4096, 128), ("bass", 1024, 0), ("drums", 1024, 32), ("drums", 1024, 0)])
+    ("bass", 4096, 0), ("bass", 4096, 128), ("bass", 1024, 0), ("drums", 1024, 32), ("drums", 1024, 0), ("drums", 4096, 32), ("drums", 4096, 0)])
 def test_specialist_grouping_future_independence_and_state(source, feature_n_fft, waveform_basis):
     torch.manual_seed(184)
     model = SpecialistSeparator(source=source, band_width=16, global_width=32, layers=2,
@@ -72,10 +72,10 @@ def test_complete_gradient_path_and_detached_warmup(source, silent):
         assert all(p.grad.norm() > 0 for p in additions.parameters())
 
 
-@pytest.mark.parametrize("source,parameters,macs", [
-    ("bass", 2114052, 3330240), ("drums", 3032036, 5116864)])
-def test_budget_counts_the_executed_operations(source, parameters, macs):
-    model = SpecialistSeparator(source=source).eval()
+@pytest.mark.parametrize("source,feature_n_fft,parameters,macs", [
+    ("bass", 4096, 2114052, 3330240), ("drums", 1024, 3032036, 5116864), ("drums", 4096, 3425444, 5510272)])
+def test_budget_counts_the_executed_operations(source, feature_n_fft, parameters, macs):
+    model = SpecialistSeparator(source=source, feature_n_fft=feature_n_fft).eval()
     counted = []
     def count(module, args, result):
         x = args[0]
@@ -97,6 +97,6 @@ def test_budget_counts_the_executed_operations(source, parameters, macs):
 
 def test_specialist_geometry_rejects_other_sources_and_mixed_variants():
     for kwargs in ({"source": "vocals"}, {"source": "other"}, {"source": "bass", "waveform_basis": 513},
-                   {"source": "drums", "feature_n_fft": 4096}, {"source": "bass", "feature_n_fft": 2048}):
+                   {"source": "drums", "feature_n_fft": 2048}, {"source": "bass", "feature_n_fft": 2048}):
         with pytest.raises(ValueError):
             SpecialistSeparator(**kwargs)

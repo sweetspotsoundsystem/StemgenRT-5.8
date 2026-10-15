@@ -12,12 +12,12 @@ from stemgenrt.independent_export import export_fp32, make_export_copy
 from stemgenrt.checkpoint import state_sha256
 
 
-@pytest.mark.parametrize("vocal_feature_n_fft,bass_waveform_basis", [(1024, 0), (4096, 0), (1024, 128)])
-def test_combined_onnx_matches_native_stream_flush_reset_and_preserves_source(tmp_path, vocal_feature_n_fft, bass_waveform_basis):
+@pytest.mark.parametrize("vocal_feature_n_fft,bass_waveform_basis,drums_feature_n_fft", [(1024, 0, 1024), (4096, 0, 1024), (1024, 128, 1024), (1024, 0, 4096)])
+def test_combined_onnx_matches_native_stream_flush_reset_and_preserves_source(tmp_path, vocal_feature_n_fft, bass_waveform_basis, drums_feature_n_fft):
     ort = pytest.importorskip("onnxruntime")
     onnx = pytest.importorskip("onnx")
     torch.manual_seed(20261010)
-    children = {source: SpecialistSeparator(source=source, waveform_basis=bass_waveform_basis if source == "bass" else 256).eval() for source in ("drums", "bass")}
+    children = {source: SpecialistSeparator(source=source, waveform_basis=bass_waveform_basis if source == "bass" else 256, feature_n_fft=4096 if source == "bass" else drums_feature_n_fft).eval() for source in ("drums", "bass")}
     children["vocals"] = BandSeparator(sources=("vocals",), feature_n_fft=vocal_feature_n_fft).eval()
     with torch.no_grad():
         for child in children.values():
@@ -35,7 +35,7 @@ def test_combined_onnx_matches_native_stream_flush_reset_and_preserves_source(tm
     assert state_sha256(model.state_dict()) == digest and torch.equal(torch.get_rng_state(), rng)
     assert flags == [(m.training, [p.requires_grad for p in m.parameters()]) for m in model.modules()]
     graph = onnx.load(path)
-    assert sum(node.op_type == "DFT" for node in graph.graph.node) == (8 if vocal_feature_n_fft == 4096 else 7)
+    assert sum(node.op_type == "DFT" for node in graph.graph.node) == (7 + (vocal_feature_n_fft == 4096) + (drums_feature_n_fft == 4096))
     metadata = json.loads({m.key: m.value for m in graph.metadata_props}["stemgenrt.experimental"])
     assert metadata["state_count"] == 13 + bool(bass_waveform_basis) and metadata["native_host_qualified"] is False
     options = ort.SessionOptions()

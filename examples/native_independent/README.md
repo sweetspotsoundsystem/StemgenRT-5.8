@@ -7,7 +7,7 @@ three separate sessions with a single combined graph containing all 13 released 
 not measure a plugin queue, audio driver or DAW callback.
 
 The selected geometries are the default vocal/joint band models and independent
-bass/drums specialists. Bass retains 3968 samples of analysis history. Drums has
+bass/drums specialists. Bass retains 3968 samples of analysis history. Drums supports either 896 or 3968 history samples and has
 a fifth waveform state. The optional bass waveform branch adds its own fifth state; the probe validates this declared interface as well. All emit one 128-sample-delayed hop at 44.1 kHz; adding
 the host's 128-sample accumulation gives the intended 256-sample system delay.
 

@@ -208,3 +208,17 @@ def test_native_builder_accepts_the_declared_bass_branch_geometry(monkeypatch, b
     else:
         with pytest.raises(ValueError, match="branch geometry"):
             prepare.load_endpoint("synthetic", "digest", "bass", 8000, expected_parent_updates=40000)
+
+
+@pytest.mark.parametrize("feature_n_fft,basis,accepted", [(1024, 256, True), (4096, 256, True), (4096, 128, False)])
+def test_native_builder_accepts_the_declared_drums_analysis_geometry(monkeypatch, feature_n_fft, basis, accepted):
+    from examples.native_independent import prepare
+    from stemgenrt.specialist import SpecialistSeparator
+    model = SpecialistSeparator(source="drums", feature_n_fft=feature_n_fft, waveform_basis=basis)
+    model.provenance.update(training_updates=48000, current_stage_updates=8000, parent_training_updates=40000)
+    monkeypatch.setattr(prepare.ck, "load_model", lambda *a, **kw: model)
+    if accepted:
+        assert prepare.load_endpoint("synthetic", "digest", "drums", 8000, expected_parent_updates=40000) is model
+    else:
+        with pytest.raises(ValueError, match="branch geometry"):
+            prepare.load_endpoint("synthetic", "digest", "drums", 8000, expected_parent_updates=40000)

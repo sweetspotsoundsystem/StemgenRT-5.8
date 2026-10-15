@@ -23,7 +23,7 @@ import torch
 from stemgenrt.model import StemgenRT58, VERSION
 from stemgenrt.compact import CompactSeparator, VERSION as COMPACT_VERSION, SOURCE_ORDER
 from stemgenrt.banded import BandSeparator, VERSION as BAND_VERSION, LONG_ANALYSIS_VERSION
-from stemgenrt.specialist import SpecialistSeparator, VERSION as SPECIALIST_VERSION, BASS_WAVEFORM_VERSION
+from stemgenrt.specialist import SpecialistSeparator, VERSION as SPECIALIST_VERSION, BASS_WAVEFORM_VERSION, DRUMS_LONG_VERSION
 from stemgenrt._checkpoint.codec import CODEC, pack, unpack
 
 SCHEMA = "hs-tasnet-eight-state-training-v1"
@@ -232,7 +232,7 @@ class ParameterEMA:
 def _new_model(architecture):
     # Constructing a loader must not consume the training RNG being restored.
     with torch.random.fork_rng(devices=[]), torch.device("cpu"):
-        if architecture.get("version") in (SPECIALIST_VERSION, BASS_WAVEFORM_VERSION):
+        if architecture.get("version") in (SPECIALIST_VERSION, BASS_WAVEFORM_VERSION, DRUMS_LONG_VERSION):
             model = SpecialistSeparator(source=architecture["source_order"][0],
                 band_width=architecture["band_width"], global_width=architecture["global_width"],
                 layers=architecture["layers"], feature_n_fft=architecture["feature_n_fft"],
