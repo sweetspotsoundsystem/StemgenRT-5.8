@@ -1,5 +1,6 @@
 """Real training orchestration and combined independent-model evaluation."""
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -44,8 +45,8 @@ def test_independent_system_keeps_each_stem_and_physical_alignment_through_eof(t
         IndependentStems(drums=children["bass"], bass=children["drums"], vocals=children["vocals"])
 
 
-@pytest.mark.parametrize("target_source,index", [("bass", 1), ("drums", 0)])
-def test_real_trainer_factory_resolves_geometry_and_resumes_the_same_source(monkeypatch, tmp_path, target_source, index):
+@pytest.mark.parametrize("target_source,index,feature_n_fft", [("bass", 1, None), ("drums", 0, None), ("drums", 0, 4096)])
+def test_real_trainer_factory_resolves_geometry_and_resumes_the_same_source(monkeypatch, tmp_path, target_source, index, feature_n_fft):
     corpus = SimpleNamespace(sha256="synthetic-fixed", tracks=("synthetic",), root_weights={"synthetic": 1.})
     monkeypatch.setattr(trainer, "load_manifest", lambda *a, **kw: corpus)
     class Dataset(torch.utils.data.Dataset):
@@ -69,17 +70,27 @@ def test_real_trainer_factory_resolves_geometry_and_resumes_the_same_source(monk
     monkeypatch.setattr(trainer, "grouped_update", update)
     config = trainer.TrainingConfig(model_family="specialist", target_source=target_source,
         band_width=16, band_global_width=16, band_layers=1, steps=3, warmup=0,
-        checkpoint_every=1, workers=0, device="cpu", precision="fp32")
+        checkpoint_every=1, workers=0, device="cpu", precision="fp32", specialist_feature_n_fft=feature_n_fft)
     first = trainer.train(config, "synthetic.json", tmp_path / "first", stop_after=1)
     resumed = trainer.train(config, "synthetic.json", tmp_path / "resumed", stop_after=2,
         resume=first["checkpoint"]["path"], sha256=first["checkpoint"]["sha256"])
     saved_config = json.loads((tmp_path / "resumed/config.json").read_text())
     assert not any(k.startswith("compact_") for k in saved_config)
     assert saved_config["model_family"] == "specialist"
-    assert saved_config["specialist_feature_n_fft"] == (4096 if target_source == "bass" else 1024)
+    assert saved_config["specialist_feature_n_fft"] == (feature_n_fft or (4096 if target_source == "bass" else 1024))
     assert saved_config["specialist_waveform_basis"] == (0 if target_source == "bass" else 256)
     assert resumed["resumed_from_step"] == 1 and resumed["next_sample_index"] == 32
     loaded = checkpoint.load_model(resumed["checkpoint"]["path"], expected_sha256=resumed["checkpoint"]["sha256"])
     assert loaded.provenance["training_updates"] == loaded.provenance["current_stage_updates"] == 2
     assert loaded.provenance["parent_training_updates"] == 0
     assert loaded.sources == (target_source,)
+
+    if target_source == "drums" and feature_n_fft is None:
+        upgraded = trainer.train(replace(config, specialist_feature_n_fft=4096), "synthetic.json",
+            tmp_path / "upgraded", stop_after=1, checkpoint=first["checkpoint"]["path"],
+            sha256=first["checkpoint"]["sha256"])
+        child = checkpoint.load_model(upgraded["checkpoint"]["path"], expected_sha256=upgraded["checkpoint"]["sha256"])
+        assert child.feature_n_fft == 4096 and child.waveform_basis == 256
+        assert child.provenance["parent_training_updates"] == 1
+        assert child.provenance["current_stage_updates"] == 1
+        assert child.provenance["training_updates"] == 2

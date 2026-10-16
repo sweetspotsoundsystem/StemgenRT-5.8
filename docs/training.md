@@ -188,3 +188,36 @@ bass/Other gains, and retained SIR, absence and bass-only preservation limits.
 Attribution to the added branch additionally requires +0.05 dB bass SDR over
 matched continuation and the declared protection checks. These configurations
 are experimental; they do not replace released weights.
+
+
+### Drums longer-analysis comparison
+
+`configs/drums-control-finetune.json` and
+`configs/drums-long-analysis-finetune.json` define matched 8,000-update stages
+starting from the same released 40,000-update drums EMA. Both use fresh Adam and
+EMA, FP32, the same ordered data and augmentation, unchanged source-view
+objectives, and a 3e-4 to 3e-5 cosine learning rate with 100-update warmup. The
+candidate adds zero-initialized 4096-point trailing analysis projections. The
+existing waveform branch, carrier and output timing are retained.
+
+```sh
+python train_streaming.py --config configs/drums-long-analysis-finetune.json \
+  --manifest /path/to/train.json --validation-manifest /path/to/valid.json \
+  --checkpoint /path/to/drums.pt --sha256 DRUMS_SHA256 --role ema \
+  --output /path/to/new-drums-run
+```
+
+The bounded research comparison retains complete Adam/EMA/RNG checkpoints every
+1,000 updates and scores fixed training and validation crops. Only final EMA
+endpoints are eligible for selection. Bass and vocals stay fixed, and Other is
+the physical mixture residual. Release gates require at least +0.1 dB each in
+drums full-band SDR, drums 20–250 Hz SDR and Other SDR, positive paired drums/Other
+track medians, and the existing SIR, absence and drums-only preservation limits.
+Attribution to longer analysis additionally requires +0.05 dB drums SDR over
+matched continuation with the same protection checks. No test set or automatic
+budget extension is used. These recipes do not replace released weights.
+
+When exporting a qualifying final endpoint with the released bass and vocals,
+pass `--drums-updates 8000 --drums-parent-updates 40000` to
+`scripts/export_independent_model.py`, keeping `--expected-updates 40000` for the
+fixed stems. Export validates each stem's ancestry and interface independently.

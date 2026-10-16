@@ -10,12 +10,12 @@ from stemgenrt.specialist_export import export_fp32, make_export_copy
 from stemgenrt.checkpoint import state_sha256
 
 
-@pytest.mark.parametrize("source,waveform_basis", [("bass", 0), ("bass", 128), ("drums", 256)])
-def test_specialist_full_onnx_stream_matches_every_state_without_mutating_source(tmp_path, source, waveform_basis):
+@pytest.mark.parametrize("source,waveform_basis,feature_n_fft", [("bass", 0, 4096), ("bass", 128, 4096), ("drums", 256, 1024), ("drums", 256, 4096)])
+def test_specialist_full_onnx_stream_matches_every_state_without_mutating_source(tmp_path, source, waveform_basis, feature_n_fft):
     ort = pytest.importorskip("onnxruntime")
     onnx = pytest.importorskip("onnx")
     torch.manual_seed(842)
-    model = SpecialistSeparator(source=source, waveform_basis=waveform_basis).train()
+    model = SpecialistSeparator(source=source, waveform_basis=waveform_basis, feature_n_fft=feature_n_fft).train()
     with torch.no_grad():
         for head in model.backbone.mask_heads:
             head.weight.normal_(std=.003)
@@ -28,7 +28,7 @@ def test_specialist_full_onnx_stream_matches_every_state_without_mutating_source
     assert model.training and flags == [p.requires_grad for p in model.parameters()]
     assert state_sha256(model.state_dict()) == fingerprint and torch.equal(torch.get_rng_state(), rng)
     graph = onnx.load(str(path))
-    assert sum(n.op_type == "DFT" for n in graph.graph.node) == (3 if source == "bass" else 2)
+    assert sum(n.op_type == "DFT" for n in graph.graph.node) == (3 if feature_n_fft == 4096 else 2)
     assert not any(n.op_type in ("GRU", "Loop", "Scan", "Softmax") for n in graph.graph.node)
     metadata = json.loads({m.key: m.value for m in graph.metadata_props}["stemgenrt.experimental"])
     assert metadata["architecture"]["source_order"] == [source]

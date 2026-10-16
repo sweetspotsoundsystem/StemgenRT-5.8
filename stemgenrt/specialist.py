@@ -1,7 +1,7 @@
 """Independent causal bass and drums research models with complete source identity.
 
-Bass uses finer low-frequency bands and optional longer past-only magnitude
-features. Both specialists support an optional short waveform residual and synthesize on
+Bass uses finer low-frequency bands. Both specialists support longer past-only
+magnitude features and an optional short waveform residual, and synthesize on
 the existing 128-sample alignment and 128-sample hop; neither emits other stems.
 Untrained architectures and arithmetic budgets do not imply quality or native
 runtime qualification. The released model and vocal checkpoint schema remain
@@ -22,7 +22,16 @@ from .model import ModelOutput
 
 VERSION = "causal-independent-stem-specialists-v1"
 BASS_WAVEFORM_VERSION = "causal-independent-bass-waveform-v1"
+DRUMS_LONG_VERSION = "causal-independent-drums-long-analysis-v1"
 BASS_BAND_EDGES = (0, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 160, 256, 384, 513)
+
+
+def _architecture_version(source, feature_n_fft, waveform_basis):
+    if source == "drums" and feature_n_fft == 4096:
+        return DRUMS_LONG_VERSION
+    if source == "bass" and waveform_basis:
+        return BASS_WAVEFORM_VERSION
+    return VERSION
 
 
 class WaveformBandState(NamedTuple):
@@ -59,7 +68,7 @@ class SpecialistBackbone(CausalBandBackbone):
     def forward(self, features, local_hidden, global_hidden, long_features=None):
         encoded = self.encode_features(features)
         if self.feature_n_fft == 4096:
-            require(long_features is not None, "Bass long analysis features are required")
+            require(long_features is not None, "Long analysis features are required")
             batch, frames = features.shape[:2]
             values = []
             for module, (first, last, width) in zip(self.long_encoders, self.long_groups):
@@ -97,8 +106,8 @@ class SpecialistSeparator(BandSeparator):
         global_width = (160 if bass else 192) if global_width is None else global_width
         feature_n_fft = (4096 if bass else 1024) if feature_n_fft is None else feature_n_fft
         waveform_basis = (0 if bass else 256) if waveform_basis is None else waveform_basis
-        require(type(feature_n_fft) is int and feature_n_fft in (1024, 4096)
-                and (bass or feature_n_fft == 1024), "Long analysis is a bass-only feature")
+        require(type(feature_n_fft) is int and feature_n_fft in (1024, 4096),
+                "Specialist analysis must use 1024 or 4096 points")
         require(type(waveform_basis) is int and 0 <= waveform_basis <= 512,
                 "Waveform residual requires at most 512 basis channels")
         self.sources = (source,)
@@ -108,7 +117,7 @@ class SpecialistSeparator(BandSeparator):
         self.state_type = WaveformBandState if waveform_basis else BandState
         self.state_names = self.state_type._fields
         self.training_precision = "fp32"
-        self.provenance = {"architecture_version": BASS_WAVEFORM_VERSION if bass and waveform_basis else VERSION, "training_updates": 0,
+        self.provenance = {"architecture_version": _architecture_version(source, feature_n_fft, waveform_basis), "training_updates": 0,
                            "quality_measured": False, "initialization": "scratch"}
         analysis, synthesis = asymmetric_windows()
         self.register_buffer("analysis_window", analysis)
@@ -126,7 +135,7 @@ class SpecialistSeparator(BandSeparator):
 
     @property
     def architecture_metadata(self):
-        return {"version": BASS_WAVEFORM_VERSION if self.sources == ("bass",) and self.waveform_basis else VERSION, "source_order": list(self.sources),
+        return {"version": _architecture_version(self.sources[0], self.feature_n_fft, self.waveform_basis), "source_order": list(self.sources),
                 "band_width": self.band_width, "global_width": self.global_width, "layers": self.layers,
                 "band_edges": list(self.backbone.edges), "band_packing": "independent equal-width groups",
                 "sample_rate": 44100, "feature_n_fft": self.feature_n_fft, "carrier_n_fft": 1024,
@@ -245,4 +254,37 @@ def extend_bass_waveform(model, *, waveform_basis=128):
     upgraded.provenance = {**copy.deepcopy(model.provenance),
         "architecture_version": BASS_WAVEFORM_VERSION,
         "waveform_initialization": "Copied existing bass parameters; zero waveform decoder"}
+    return upgraded
+
+
+def extend_drums_analysis(model):
+    """Add zero long-feature encoders for a fresh, initially equivalent stage.
+
+    The carrier, waveform branch and existing weights remain exact. The added
+    audio history stores past samples; it introduces no lookahead or output delay.
+    """
+    require(type(model) is SpecialistSeparator and model.sources == ("drums",)
+            and model.feature_n_fft == 1024, "Require a drums specialist with 1024-point analysis")
+    require(all(t.dtype == torch.float32 and bool(torch.isfinite(t).all()) for t in model.state_dict().values()),
+            "Require finite FP32 source tensors")
+    with torch.random.fork_rng(devices=[]):
+        upgraded = SpecialistSeparator(source="drums", band_width=model.band_width,
+            global_width=model.global_width, layers=model.layers,
+            feature_n_fft=4096, waveform_basis=model.waveform_basis)
+    with torch.no_grad():
+        for parameter in upgraded.backbone.long_encoders.parameters():
+            parameter.zero_()
+    source, merged = model.state_dict(), upgraded.state_dict()
+    require(all(name in merged and merged[name].shape == value.shape for name, value in source.items()),
+            "Existing drums parameter geometry changed")
+    merged.update(source)
+    upgraded.load_state_dict(merged, strict=True)
+    upgraded.to(next(model.parameters()).device).train(model.training)
+    flags = {name: value.requires_grad for name, value in model.named_parameters()}
+    for name, value in upgraded.named_parameters():
+        value.requires_grad_(flags.get(name, any(flags.values())))
+    upgraded.training_precision = model.training_precision
+    upgraded.provenance = {**copy.deepcopy(model.provenance),
+        "architecture_version": DRUMS_LONG_VERSION,
+        "long_analysis_initialization": "Copied existing drums parameters; zero long-feature encoders"}
     return upgraded

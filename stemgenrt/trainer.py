@@ -25,7 +25,7 @@ from .losses import grouped_update, _teacher_weight, _auxiliary_weight, source_i
 from .model import StemgenRT58
 from .compact import CompactSeparator, SOURCE_ORDER
 from .banded import BandSeparator, extend_vocal_analysis
-from .specialist import SpecialistSeparator, extend_bass_waveform
+from .specialist import SpecialistSeparator, extend_bass_waveform, extend_drums_analysis
 
 
 @dataclass(frozen=True)
@@ -97,8 +97,6 @@ class TrainingConfig:
             if (self.specialist_feature_n_fft is not None and
                     (type(self.specialist_feature_n_fft) is not int or self.specialist_feature_n_fft not in (1024, 4096))):
                 raise ValueError("Invalid specialist feature FFT")
-            if self.target_source == "drums" and self.specialist_feature_n_fft not in (None, 1024):
-                raise ValueError("Long analysis is a bass-only feature")
             if (self.specialist_waveform_basis is not None and
                     (type(self.specialist_waveform_basis) is not int or not 0 <= self.specialist_waveform_basis <= 512)):
                 raise ValueError("Invalid specialist waveform basis")
@@ -291,6 +289,10 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     and config.specialist_waveform_basis and type(model) is SpecialistSeparator
                     and model.sources == ("bass",) and model.waveform_basis == 0):
                 model = extend_bass_waveform(model, waveform_basis=config.specialist_waveform_basis)
+            if (config.model_family == "specialist" and config.target_source == "drums"
+                    and config.specialist_feature_n_fft == 4096 and type(model) is SpecialistSeparator
+                    and model.sources == ("drums",) and model.feature_n_fft == 1024):
+                model = extend_drums_analysis(model)
             from .checkpoint import _validate_geometry_config
             _validate_geometry_config(config_dict, model)
         elif config.model_family == "compact":

@@ -78,7 +78,7 @@ def load_endpoint(path, digest, source, expected_updates, *, expected_parent_upd
             and model.global_width == (160 if source == "bass" else 192) and model.layers == 2,
             "This probe requires the selected default geometry")
     if source in ("bass", "drums"):
-        require(model.feature_n_fft == (4096 if source == "bass" else 1024)
+        require(model.feature_n_fft in ((4096,) if source == "bass" else (1024, 4096))
                 and model.waveform_basis in ((0, 128) if source == "bass" else (256,)), "Specialist branch geometry differs")
     return model
 

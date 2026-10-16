@@ -157,3 +157,26 @@ and preservation; their outcomes are not assumed in advance. Retain the eight
 complete milestone checkpoints and fixed crop curves, and evaluate only the
 final EMA on the full development panel. There is no automatic extension or
 promotion of this diagnostic arm.
+
+
+## Optional drums analysis extension
+
+`SpecialistSeparator(source="drums", feature_n_fft=4096)` adds trailing Hann
+log-magnitude features while retaining the 1024-point complex carrier and the
+existing 256-channel waveform branch. It adds 393,408 parameters and dense MACs
+per hop. With the released bass and vocals, the combined model has 8,259,980
+parameters and 13,646,080 dense MACs per hop; FFT and elementwise work are excluded.
+
+Drums audio history grows from 896 to 3,968 samples. The specialist still has five
+states and the combined model has thirteen; hosts must read the exported shapes.
+The 128-sample hop, 128-sample graph alignment and intended 256-sample total delay
+are unchanged. FP32 standalone and combined export, checkpoint loading and the
+portable native worker support the extension. Physical Mac runtime and model
+quality require separate qualification.
+
+Use `configs/drums-long-analysis-finetune.json` to initialize a fresh stage from a
+released drums EMA. The trainer copies all existing tensors and initializes the
+additional feature projections to zero, preserving the initial audio. The
+matching control is `configs/drums-control-finetune.json`. Both create fresh Adam
+and EMA; exact `--resume` restores the complete saved architecture and recipe.
+See [the training comparison](training.md#drums-longer-analysis-comparison).
