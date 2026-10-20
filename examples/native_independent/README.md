@@ -86,3 +86,14 @@ Linux checks can validate numerical behavior; they are rejected as Mac evidence.
 Read loop cost and completion latency separately: completion includes wake-up delay.
 Use actual trained models, development quality, listening, both target Macs and
 plugin integration checks before recommending deployment.
+
+## Continuous endurance protocol
+
+A packet can additionally declare `endurance_order` (each case exactly once),
+`endurance_warmup_hops`, `endurance_measured_hops`, and `input_period_hops`.
+After the balanced short trials, the runner performs one uninterrupted paced
+trial per case. The fixed synthetic input repeats, while every model state
+continues across input boundaries. The analyzer checks the input period,
+exposure, every raw timing sample, final finite states, and pinned runtime.
+Endurance results appear separately from the shorter trials; both retain the
+original arrival deadlines even when the worker falls behind.
