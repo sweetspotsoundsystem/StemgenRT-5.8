@@ -72,11 +72,11 @@ def run(args,output,manifest):
     result.check_returncode()
     write(output/'binary.json',dict(sha256=sha(binary),dependencies=capture(['otool','-L',str(binary)])))
 
-    def trial(name,case,warmup,measured,check):
+    def trial(name,case,warmup,measured,check,repeat_input=False):
         print(f'Running {name}: {measured:,} measured hops',flush=True)
         samples,snapshot=output/(name+'.csv'),output/(name+'.bin')
         models=[HERE/protocol['models'][key]['path'] for key in protocol['cases'][case]]
-        action=('check' if check else 'measure')+('_combined' if protocol.get('case_assembly',{}).get(case,False) else '')
+        action=('check' if check else ('measure_repeat' if repeat_input else 'measure'))+('_combined' if protocol.get('case_assembly',{}).get(case,False) else '')
         command=[str(binary),str(HERE/protocol['input_file']),str(warmup),str(measured),
                  action,str(samples),str(snapshot),*[str(p) for p in models]]
         started=utc()
@@ -86,7 +86,7 @@ def run(args,output,manifest):
         write(output/(name+'-execution.json'),dict(command=command,started_utc=started,ended_utc=utc(),returncode=result.returncode))
         result.check_returncode()
         report=json.loads(result.stdout)
-        validate_report(report,protocol,case,warmup,measured,check)
+        validate_report(report,protocol,case,warmup,measured,check,repeat_input=repeat_input)
         library=Path(report['loaded_runtime']).resolve(strict=True)
         require(library.is_relative_to(HERE/'sdk/lib'),'Loaded runtime is outside pinned SDK')
         relative=str(library.relative_to(HERE))
@@ -106,6 +106,9 @@ def run(args,output,manifest):
     for index,order in enumerate(protocol['round_order'],1):
         for case in order:
             trial(f'round{index}-{case}',case,protocol['warmup_hops'],protocol['measured_hops_per_trial'],False)
+    for case in protocol.get('endurance_order',[]):
+        trial('endurance-'+case,case,protocol['endurance_warmup_hops'],
+              protocol['endurance_measured_hops'],False,repeat_input=True)
     require(check_package(HERE)==manifest,'Package changed during measurement')
     summary=analyze(output)
     write(output/'summary.json',summary)

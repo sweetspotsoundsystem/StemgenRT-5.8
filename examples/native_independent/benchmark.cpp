@@ -209,14 +209,15 @@ struct Graph {
 
 int main(int argc, char** argv) {
   try {
-    require(argc >= 8 && argc <= 10, "Usage: benchmark INPUT.f32 WARMUP MEASURED check|measure|check_combined|measure_combined samples.csv final.bin MODEL [MODEL MODEL]");
+    require(argc >= 8 && argc <= 10, "Usage: benchmark INPUT.f32 WARMUP MEASURED check|measure|measure_repeat|check_combined|measure_combined samples.csv final.bin MODEL [MODEL MODEL]");
     require(std::endian::native == std::endian::little && sizeof(float) == 4, "Require little-endian FP32");
     const int warmup = std::stoi(argv[2]), measured = std::stoi(argv[3]);
     const std::string action = argv[4];
-    const bool combined = action == "check_combined" || action == "measure_combined";
+    const bool combined = action == "check_combined" || action == "measure_combined" || action == "measure_repeat_combined";
     const bool check = action == "check" || action == "check_combined";
-    require(check || action == "measure" || action == "measure_combined", "Unknown action");
-    require(warmup >= 16 && warmup <= 4096 && measured >= 64 && measured <= 100000, "Invalid bounded hop counts");
+    const bool repeatInput = action == "measure_repeat" || action == "measure_repeat_combined";
+    require(check || action == "measure" || action == "measure_combined" || repeatInput, "Unknown action");
+    require(warmup >= 16 && warmup <= 4096 && measured >= 64 && measured <= 200000, "Invalid bounded hop counts");
     require(!check || warmup + measured <= 4096, "Parity trace too large");
     require(std::string(OrtGetApiBase()->GetVersionString()) == "1.26.0", "Require pinned ORT 1.26.0");
     disableDenormals(); Clock::initialize(); scheduling::Scheduler::configureQos();
@@ -240,8 +241,24 @@ int main(int argc, char** argv) {
     std::vector<float> audio(hops * 256);
     std::ifstream input(argv[1], std::ios::binary);
     require(bool(input), "Cannot open synthetic input");
-    input.read(reinterpret_cast<char*>(audio.data()), static_cast<std::streamsize>(audio.size() * 4));
-    require(bool(input), "Synthetic input is too short");
+    size_t inputPeriodHops = 0;
+    if (repeatInput) {
+      input.seekg(0, std::ios::end);
+      const auto bytes = input.tellg();
+      require(bytes > 0 && bytes % 1024 == 0 && bytes <= 1024LL * 1024 * 512,
+              "Repeated synthetic input must contain whole stereo hops and be at most 512 MiB");
+      input.seekg(0, std::ios::beg);
+      std::vector<float> period(static_cast<size_t>(bytes) / sizeof(float));
+      input.read(reinterpret_cast<char*>(period.data()), bytes);
+      require(bool(input) && std::all_of(period.begin(), period.end(), [](float x) { return std::isfinite(x); }),
+              "Invalid repeated synthetic input");
+      inputPeriodHops = period.size() / 256;
+      for (size_t offset = 0; offset < audio.size(); offset += period.size())
+        std::copy_n(period.data(), std::min(period.size(), audio.size() - offset), audio.data() + offset);
+    } else {
+      input.read(reinterpret_cast<char*>(audio.data()), static_cast<std::streamsize>(audio.size() * 4));
+      require(bool(input), "Synthetic input is too short");
+    }
     size_t snapshotSize = combined ? 512 : 0;
     for (const auto& graph : graphs) snapshotSize += graph->snapshotSize();
     std::vector<float> snapshot(snapshotSize), trace(check ? hops * snapshotSize : 0);
@@ -302,6 +319,7 @@ int main(int argc, char** argv) {
     std::cout << "{\"status\":\"completed\",\"paced\":true,\"condition\":\"qos\",\"graphs\":" << graphs.size()
       << ",\"warmup_hops\":" << warmup << ",\"measured_hops\":" << measured << ",\"parity_trace\":" << (check ? "true" : "false")
       << ",\"physical_residual_other\":" << (combined ? "true" : "false")
+      << ",\"input_repeated\":" << (repeatInput ? "true" : "false") << ",\"input_period_hops\":" << inputPeriodHops
       << ",\"graph_embedded_residual_other\":" << (graphs.size() == 1 && graphs[0]->kind == "independent" ? "true" : "false")
       << ",\"graph_alignment_samples\":128,\"host_queue_measured\":false"
       << ",\"runtime_platform\":" << std::quoted(kPlatform)

@@ -222,3 +222,42 @@ def test_native_builder_accepts_the_declared_drums_analysis_geometry(monkeypatch
     else:
         with pytest.raises(ValueError, match="branch geometry"):
             prepare.load_endpoint("synthetic", "digest", "drums", 8000, expected_parent_updates=40000)
+
+
+@pytest.mark.parametrize("mutation", [None,"missing","wrong_count","no_repeat","wrong_period","bad_endpoint","wrong_runtime","unbalanced"])
+def test_endurance_records_require_complete_continuous_exposure(synthetic,mutation):
+    package,output=synthetic
+    path=output/'plan.json'
+    plan=json.loads(path.read_text())
+    protocol=plan['protocol']
+    (package/'input.f32').write_bytes(bytes(1024))
+    manifest=plan['package_manifest']
+    manifest['files']['input.f32']=sha(package/'input.f32')
+    write(package/'manifest.json',manifest)
+    protocol.update(endurance_order=['toy'],endurance_warmup_hops=2,endurance_measured_hops=3,
+                    input_file='input.f32',input_period_hops=1)
+    if mutation=='unbalanced':protocol['endurance_order']=[]
+    write(path,plan)
+    for suffix in ('.json','.csv.gz'):
+        (output/('endurance-toy'+suffix)).write_bytes((output/('round1-toy'+suffix)).read_bytes())
+    endpoint=output/'endurance-toy.bin'
+    endpoint.write_bytes(array.array('f',[0.]*5).tobytes())
+    path=output/'endurance-toy.json'
+    current=json.loads(path.read_text())
+    current.update(input_repeated=True,input_period_hops=1)
+    if mutation=='wrong_count':current['measured_hops']=4
+    if mutation=='no_repeat':current['input_repeated']=False
+    if mutation=='wrong_period':current['input_period_hops']=2
+    if mutation=='wrong_runtime':current['loaded_runtime_sha256']='0'*64
+    if mutation=='bad_endpoint':endpoint.write_bytes(array.array('f',[float('nan')]*5).tobytes())
+    write(path,current)
+    if mutation=='missing':(output/'endurance-toy.csv.gz').unlink()
+    if mutation is None:
+        result=analyze(output,package)
+        assert result['endurance']['toy']['measured_hops']==3
+        assert result['endurance']['toy']['deadline_misses']==1
+        assert result['endurance']['toy']['continuous_state'] is True
+        assert result['cases']['toy']['measured_hops']==6
+    else:
+        with pytest.raises((ValueError,FileNotFoundError)):
+            analyze(output,package)

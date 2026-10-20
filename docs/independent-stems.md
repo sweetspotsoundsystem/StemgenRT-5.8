@@ -180,3 +180,11 @@ additional feature projections to zero, preserving the initial audio. The
 matching control is `configs/drums-control-finetune.json`. Both create fresh Adam
 and EMA; exact `--resume` restores the complete saved architecture and recipe.
 See [the training comparison](training.md#drums-longer-analysis-comparison).
+
+## Experimental execution optimization
+
+The [deployment optimization tools](deployment-optimization.md) create separate
+layout-specialized FP32, fused FP32 and selectively quantized candidates from the original independent
+export. They preserve the training weights and 13-state interface. Numerical,
+separation-quality and physical-host measurements remain required before any
+candidate replaces a release.

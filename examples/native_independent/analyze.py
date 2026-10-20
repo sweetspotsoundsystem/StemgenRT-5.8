@@ -124,7 +124,7 @@ def compare_trace(path,protocol,case,here):
                 reference_scope='same numerical variant, each output and state, every preflight hop')
 
 
-def validate_report(report,protocol,case,warmup,measured,check,*,expected_platform="macos"):
+def validate_report(report,protocol,case,warmup,measured,check,*,expected_platform="macos",repeat_input=False):
     require(report['runtime_platform']==expected_platform and report['status']=='completed' and report['paced'] and report['condition']=='qos'
         and report['graphs']==len(protocol['cases'][case]) and report['warmup_hops']==warmup
         and report['measured_hops']==measured and report['parity_trace'] is check
@@ -136,8 +136,37 @@ def validate_report(report,protocol,case,warmup,measured,check,*,expected_platfo
         and report['quality_measured'] is False and report['plugin_deadlines_qualified'] is False
         and report['physical_residual_other'] is protocol.get('case_assembly',{}).get(case,False)
         and report.get('graph_embedded_residual_other',False) is protocol.get('embedded_residual_cases',{}).get(case,False)
+        and report.get('input_repeated',False) is repeat_input
+        and (not repeat_input or report.get('input_period_hops')==protocol['input_period_hops'])
         and report['graph_alignment_samples']==128 and report['host_queue_measured'] is False,
         'Native invocation, provider, policy or scope differs')
+
+
+TIMING_COLUMNS={'run':'run_wall_ms','loop':'loop_wall_ms','thread_cpu':'thread_cpu_ms',
+                'start_lateness':'start_lateness_ms','completion':'completion_from_arrival_ms'}
+
+
+def validate_samples(output,name,report,measured):
+    mapping=TIMING_COLUMNS
+    with gzip.open(output/(name+'.csv.gz'),'rt',newline='') as stream:
+        rows=[{k:float(v) for k,v in row.items()} for row in csv.DictReader(stream)]
+    require(len(rows)==measured and all(row['hop']==i for i,row in enumerate(rows)),
+            'Missing or repeated measured hop')
+    for row in rows:
+        require(all(math.isfinite(v) for v in row.values()),'Nonfinite timing sample')
+        require(all(row[key]>=0 for key in mapping.values())
+                and abs(row['hop_budget_ms']-128000/44100)<1e-5
+                and row['run_wall_ms']<=row['loop_wall_ms']+1e-7
+                and abs(row['completion_from_arrival_ms']-(row['start_lateness_ms']+row['loop_wall_ms']))<1e-6,
+                'Timing coordinate inconsistency')
+    misses=sum(r['completion_from_arrival_ms']>r['hop_budget_ms'] for r in rows)
+    over=sum(r['loop_wall_ms']>r['hop_budget_ms'] for r in rows)
+    require(misses==report['deadline_misses'] and over==report['compute_over_budget'],'Deadline accounting differs')
+    for name_key,column in mapping.items():
+        calculated=stats([r[column] for r in rows])
+        require(all(math.isclose(value,report[name_key][key],rel_tol=1e-9,abs_tol=1e-7)
+                    for key,value in calculated.items()),'Reported percentiles differ from raw samples')
+    return rows,misses,over
 
 
 def analyze(output,package=None):
@@ -157,37 +186,45 @@ def analyze(output,package=None):
     rounds_by_case={key:[] for key in protocol['cases']}
     snapshots={key:set() for key in protocol['cases']}
     runtime_digests=set()
-    mapping={'run':'run_wall_ms','loop':'loop_wall_ms','thread_cpu':'thread_cpu_ms',
-             'start_lateness':'start_lateness_ms','completion':'completion_from_arrival_ms'}
+    mapping=TIMING_COLUMNS
     for index,order in enumerate(protocol['round_order'],1):
         require(set(order)==set(protocol['cases']) and len(order)==len(protocol['cases']),'Unbalanced round')
         for case in order:
             name=f'round{index}-{case}'
             report=read(output/(name+'.json'))
             validate_report(report,protocol,case,protocol['warmup_hops'],protocol['measured_hops_per_trial'],False)
-            with gzip.open(output/(name+'.csv.gz'),'rt',newline='') as stream:
-                rows=[{k:float(v) for k,v in row.items()} for row in csv.DictReader(stream)]
-            require(len(rows)==protocol['measured_hops_per_trial'] and all(row['hop']==i for i,row in enumerate(rows)),
-                    'Missing or repeated measured hop')
-            for row in rows:
-                require(all(math.isfinite(v) for v in row.values()),'Nonfinite timing sample')
-                require(all(row[key]>=0 for key in mapping.values())
-                        and abs(row['hop_budget_ms']-128000/44100)<1e-5
-                        and row['run_wall_ms']<=row['loop_wall_ms']+1e-7
-                        and abs(row['completion_from_arrival_ms']-(row['start_lateness_ms']+row['loop_wall_ms']))<1e-6,
-                        'Timing coordinate inconsistency')
-            misses=sum(r['completion_from_arrival_ms']>r['hop_budget_ms'] for r in rows)
-            over=sum(r['loop_wall_ms']>r['hop_budget_ms'] for r in rows)
-            require(misses==report['deadline_misses'] and over==report['compute_over_budget'],'Deadline accounting differs')
-            for name_key,column in mapping.items():
-                calculated=stats([r[column] for r in rows])
-                require(all(math.isclose(value,report[name_key][key],rel_tol=1e-9,abs_tol=1e-7)
-                            for key,value in calculated.items()),'Reported percentiles differ from raw samples')
+            rows,misses,over=validate_samples(output,name,report,protocol['measured_hops_per_trial'])
             snapshots[case].add(sha(output/(name+'.bin')))
             runtime_digests.add(report['loaded_runtime_sha256'])
             rows_by_case[case].extend(rows)
             rounds_by_case[case].append(dict(round=index,deadline_misses=misses,compute_over_budget=over,
                 loop=stats([r['loop_wall_ms'] for r in rows]),completion=stats([r['completion_from_arrival_ms'] for r in rows])))
+    endurance={}
+    if 'endurance_order' in protocol:
+        order=protocol['endurance_order']
+        require(set(order)==set(protocol['cases']) and len(order)==len(protocol['cases']),
+                'Unbalanced endurance exposure')
+        period=protocol['input_period_hops']
+        require(isinstance(period,int) and period>0
+                and (package/protocol['input_file']).stat().st_size==period*256*4,
+                'Endurance input period differs')
+        for case in order:
+            name='endurance-'+case
+            report=read(output/(name+'.json'))
+            validate_report(report,protocol,case,protocol['endurance_warmup_hops'],
+                            protocol['endurance_measured_hops'],False,repeat_input=True)
+            rows,misses,over=validate_samples(output,name,report,protocol['endurance_measured_hops'])
+            snapshot=output/(name+'.bin')
+            expected_size=4*sum(math.prod(shape) for key in protocol['cases'][case]
+                                for shape in protocol['models'][key]['interface']['output_shapes'])
+            if protocol.get('case_assembly',{}).get(case,False):expected_size+=512*4
+            require(snapshot.stat().st_size==expected_size,'Endurance endpoint size differs')
+            require(all(math.isfinite(x) for x in floats(snapshot)),'Nonfinite endurance endpoint')
+            runtime_digests.add(report['loaded_runtime_sha256'])
+            endurance[case]={key:stats([r[column] for r in rows]) for key,column in mapping.items()}
+            endurance[case].update(measured_hops=len(rows),deadline_misses=misses,compute_over_budget=over,
+                input_period_hops=period,continuous_state=True,endpoint_sha256=sha(snapshot),
+                nominal_audio_seconds=len(rows)*128/44100)
     require(len(runtime_digests)==1 and all(len(v)==1 for v in snapshots.values()),'Runtime or repeat endpoint differs')
     expected_runtime={v for k,v in plan['package_manifest']['files'].items() if k.startswith('sdk/lib/')}
     require(runtime_digests<=expected_runtime,'Loaded runtime is outside pinned package')
@@ -197,7 +234,7 @@ def analyze(output,package=None):
         cases[case]={key:stats([r[column] for r in rows]) for key,column in mapping.items()}
         cases[case].update(measured_hops=len(rows),deadline_misses=sum(r['completion_from_arrival_ms']>r['hop_budget_ms'] for r in rows),
             compute_over_budget=sum(r['loop_wall_ms']>r['hop_budget_ms'] for r in rows),rounds=rounds_by_case[case])
-    return dict(schema='independent-stem-m4-worker-cost-results-v1',chip=plan['chip'],cases=cases,
+    return dict(schema='independent-stem-m4-worker-cost-results-v1',chip=plan['chip'],cases=cases,endurance=endurance,
         hop_budget_ms=128000/44100,quality_measured=False,plugin_deadlines_qualified=False,
         all_three_stems_trained=protocol.get('all_three_stems_trained',False),
         interpretation=protocol['interpretation'],three_model_case=protocol['three_model_case'])
@@ -209,6 +246,12 @@ def markdown(result):
         '| --- | ---: | ---: | ---: | ---: |']
     for name,row in result['cases'].items():
         lines.append(f"| {name} | {row['loop']['mean_ms']:.4f} | {row['loop']['p99_ms']:.4f} | {row['completion']['p99_ms']:.4f} | {row['deadline_misses']} / {row['measured_hops']} |")
+    if result.get('endurance'):
+        lines+=['','Continuous endurance trials (input repeats; model state continues):','',
+            '| Case | Seconds | Mean loop (ms) | p99 completion (ms) | Deadline misses |',
+            '| --- | ---: | ---: | ---: | ---: |']
+        for name,row in result['endurance'].items():
+            lines.append(f"| {name} | {row['nominal_audio_seconds']:.1f} | {row['loop']['mean_ms']:.4f} | {row['completion']['p99_ms']:.4f} | {row['deadline_misses']} / {row['measured_hops']} |")
     return '\n'.join(lines+['',result['interpretation'],'',result['three_model_case'],
         '', 'Synthetic worker timing. Separation quality and plugin/DAW deadlines remain unqualified.',''])
 
