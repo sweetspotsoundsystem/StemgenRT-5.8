@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -91,8 +92,17 @@ class Scheduler {
 
   static void configureQos() {
 #if defined(__APPLE__)
-    check(pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) == 0,
-          "Cannot apply user-interactive QoS");
+    const int result = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    if (result != 0) {
+      throw std::system_error(result, std::generic_category(),
+                              "Cannot apply initial user-interactive QoS");
+    }
+#endif
+    verifyQos();
+  }
+
+  static void verifyQos() {
+#if defined(__APPLE__)
     qos_class_t observed{};
     int relative = 0;
     check(pthread_get_qos_class_np(pthread_self(), &observed, &relative) == 0 &&
@@ -169,7 +179,13 @@ class Scheduler {
     verifyPolicy(final);
     cleanup();
     check(restoreSucceeded_, "Could not restore standard thread scheduling");
-    configureQos();
+    check(readPolicy().isDefault, "Thread retained real-time policy after cleanup");
+    // Mach scheduling opts the thread out of pthread QoS permanently. Restoring
+    // THREAD_STANDARD_POLICY does not permit reapplying QoS: that call can fail
+    // with EPERM after an otherwise successful measurement. Each benchmark
+    // process runs one condition; future QoS work must use a fresh thread.
+    // Keep the QoS control's final readback without changing its priority.
+    if (mode_ == "qos") verifyQos();
   }
 
   Policy initial{}, final{};
