@@ -95,7 +95,7 @@ def prepare(args):
     for name in ("benchmark.cpp", "scheduling.h", "run_macos.py", "analyze.py", "README.md"):
         shutil.copyfile(HERE / name, output / name)
     shutil.copytree(args.sdk_root / "include", output / "sdk/include", dirs_exist_ok=True, symlinks=False)
-    for name in ("libonnxruntime.1.26.0.dylib", "libonnxruntime.dylib"):
+    for name in ("libonnxruntime.1.26.0.dylib", "libonnxruntime.1.dylib", "libonnxruntime.dylib"):
         shutil.copyfile(args.sdk_root / "lib/libonnxruntime.1.26.0.dylib", output / "sdk/lib" / name)
     for name in ("LICENSE", "ThirdPartyNotices.txt"):
         shutil.copyfile(args.sdk_root / name, output / "sdk" / name)

@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 
 import pytest
-from examples.native_independent.analyze import analyze,compare_trace,sha,stats
+from examples.native_independent.analyze import analyze,compare_trace,sha,stats,summarize_profile,validate_report
 from examples.native_independent.prepare import verify_training_archive
 
 
@@ -67,7 +67,7 @@ def synthetic(tmp_path):
             loaded_runtime_sha256=manifest['files']['sdk/lib/toy.dylib'])
         current.update({key:stats([r[column] for r in rows]) for key,column in columns.items()})
         write(output/(name+'.json'),current)
-        (output/(name+'.bin')).write_bytes(b'fixed synthetic endpoint')
+        (output/(name+'.bin')).write_bytes(array.array('f',[0.]*5).tobytes())
         with gzip.open(output/(name+'.csv.gz'),'wt',newline='') as stream:
             writer=csv.DictWriter(stream,fieldnames=list(rows[0]))
             writer.writeheader();writer.writerows(rows)
@@ -261,3 +261,55 @@ def test_endurance_records_require_complete_continuous_exposure(synthetic,mutati
     else:
         with pytest.raises((ValueError,FileNotFoundError)):
             analyze(output,package)
+
+
+@pytest.mark.parametrize('mode',['qos','realtime','workgroup'])
+@pytest.mark.parametrize('mutation',[None,'wrong_condition','demoted','wrong_budget','wrong_ticks','missing_interval','profiled'])
+def test_scheduler_evidence_is_verified(synthetic,mode,mutation):
+    package,output=synthetic
+    protocol=json.loads((output/'plan.json').read_text())['protocol']
+    protocol['scheduling']={'toy':dict(mode=mode,computation_ns=2700000)}
+    current=report(protocol,2,3,False)
+    policy=dict(period_ticks=(128000000000//44100)*3//125,computation_ticks=2700000*3//125,
+                constraint_ticks=(128000000000//44100)*3//125,preemptible=True)
+    current.update(condition=mode,requested_computation_ns=2700000,mach_timebase_numer=125,
+        mach_timebase_denom=3,initial_default_policy=mode=='qos',final_default_policy=mode=='qos',
+        initial_policy=policy.copy(),final_policy=policy.copy(),profiled=False,operator_profiles=[],
+        workgroup_interval_starts=5 if mode=='workgroup' else 0,
+        workgroup_interval_finishes=5 if mode=='workgroup' else 0)
+    if mutation=='wrong_condition':current['condition']='workgroup' if mode=='qos' else 'qos'
+    if mutation=='demoted':current['final_default_policy']=not current['final_default_policy']
+    if mutation=='wrong_budget':current['requested_computation_ns']=2000000
+    if mutation=='wrong_ticks':
+        if mode=='qos':current['mach_timebase_numer']=0
+        else:current['final_policy']['computation_ticks']+=1
+    if mutation=='missing_interval':current['workgroup_interval_finishes']+=1
+    if mutation=='profiled':current.update(profiled=True,operator_profiles=['operators.json'])
+    if mutation is None:
+        validate_report(current,protocol,'toy',2,3,False)
+    else:
+        with pytest.raises(ValueError):
+            validate_report(current,protocol,'toy',2,3,False)
+
+
+@pytest.mark.parametrize('mutation',[None,'missing_run','other_provider','nonfinite','no_kernels'])
+def test_operator_profile_attribution_requires_complete_cpu_runs(tmp_path,mutation):
+    events=[dict(cat='Session',name='model_run') for _ in range(2)]
+    events += [dict(cat='Node',name='dense_kernel_time',dur=duration,
+        args=dict(provider='CPUExecutionProvider',op_name='Gemm')) for duration in (20,30)]
+    events += [dict(cat='Node',name='split_kernel_time',dur=10,
+        args=dict(provider='CPUExecutionProvider',op_name='Split')) for _ in range(2)]
+    if mutation=='missing_run':events.pop(0)
+    if mutation=='other_provider':events[2]['args']['provider']='CUDAExecutionProvider'
+    if mutation=='nonfinite':events[2]['dur']=float('nan')
+    if mutation=='no_kernels':events=events[:2]
+    path=tmp_path/'operators.json'
+    write(path,events)
+    if mutation is None:
+        result=summarize_profile(path,2)
+        assert result['operators']['Gemm']['mean_us_per_run']==25
+        assert result['operators']['Gemm']['calls_per_run']==1
+        assert result['operators']['Split']['fraction_of_instrumented_node_time']==pytest.approx(2/7)
+    else:
+        with pytest.raises(ValueError):
+            summarize_profile(path,2)

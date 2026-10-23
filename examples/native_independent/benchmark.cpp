@@ -209,10 +209,43 @@ struct Graph {
 
 int main(int argc, char** argv) {
   try {
-    require(argc >= 8 && argc <= 10, "Usage: benchmark INPUT.f32 WARMUP MEASURED check|measure|measure_repeat|check_combined|measure_combined samples.csv final.bin MODEL [MODEL MODEL]");
+    std::string mode = "qos", profilePrefix;
+    uint64_t computationNs = 2000000;
+    bool modeSet = false, budgetSet = false, profileSet = false;
+    std::vector<const char*> arguments{argv[0]};
+    for (int index = 1; index < argc; ++index) {
+      const std::string argument = argv[index];
+      if (!argument.starts_with("--")) {
+        arguments.push_back(argv[index]);
+        continue;
+      }
+      require(arguments.size() == 1, "Options must precede input paths");
+      if (argument.starts_with("--scheduler=")) {
+        require(!modeSet, "Repeated scheduler option");
+        mode = argument.substr(12); modeSet = true;
+      } else if (argument.starts_with("--cpu-budget-us=")) {
+        require(!budgetSet, "Repeated CPU-budget option");
+        const auto value = argument.substr(16);
+        require(!value.empty() && std::all_of(value.begin(), value.end(),
+                [](char c) { return c >= '0' && c <= '9'; }), "Invalid CPU budget");
+        const auto microseconds = std::stoull(value);
+        require(microseconds > 0 && microseconds < 2903, "CPU budget exceeds one hop");
+        computationNs = microseconds * 1000; budgetSet = true;
+      } else if (argument.starts_with("--profile=")) {
+        require(!profileSet, "Repeated profile option");
+        profilePrefix = argument.substr(10);
+        require(!profilePrefix.empty(), "Empty profile destination");
+        profileSet = true;
+      } else {
+        throw std::runtime_error("Unknown probe option");
+      }
+    }
+    require(arguments.size() >= 8 && arguments.size() <= 10,
+      "Usage: benchmark [--scheduler=qos|realtime|workgroup] [--cpu-budget-us=N] [--profile=PREFIX] INPUT.f32 WARMUP MEASURED check|measure|measure_repeat|check_combined|measure_combined samples.csv final.bin MODEL [MODEL MODEL]");
+    require(!profileSet || arguments.size() == 8, "Profile one graph per diagnostic session");
     require(std::endian::native == std::endian::little && sizeof(float) == 4, "Require little-endian FP32");
-    const int warmup = std::stoi(argv[2]), measured = std::stoi(argv[3]);
-    const std::string action = argv[4];
+    const int warmup = std::stoi(arguments[2]), measured = std::stoi(arguments[3]);
+    const std::string action = arguments[4];
     const bool combined = action == "check_combined" || action == "measure_combined" || action == "measure_repeat_combined";
     const bool check = action == "check" || action == "check_combined";
     const bool repeatInput = action == "measure_repeat" || action == "measure_repeat_combined";
@@ -231,15 +264,17 @@ int main(int argc, char** argv) {
     options.AddConfigEntry("session.intra_op.allow_spinning", "0");
     options.AddConfigEntry("session.inter_op.allow_spinning", "0");
     options.AddConfigEntry("mlas.disable_kleidiai", "1");
+    if (profileSet) options.EnableProfiling(profilePrefix.c_str());
     std::vector<std::unique_ptr<Graph>> graphs;
-    for (int i = 7; i < argc; ++i) graphs.push_back(std::make_unique<Graph>(env, argv[i], options));
+    for (size_t i = 7; i < arguments.size(); ++i)
+      graphs.push_back(std::make_unique<Graph>(env, arguments[i], options));
     require(combined ? graphs.size() == 3 : graphs.size() == 1, "Declare one graph or the DBV assembly explicitly");
     if (combined) require(graphs[0]->kind == "drums" && graphs[1]->kind == "bass" && graphs[2]->kind == "vocals",
                           "Combined order must be the selected drums, bass, vocal architectures");
     std::array<float, 256> physicalHistory{}, other{};
     const size_t hops = static_cast<size_t>(warmup + measured);
     std::vector<float> audio(hops * 256);
-    std::ifstream input(argv[1], std::ios::binary);
+    std::ifstream input(arguments[1], std::ios::binary);
     require(bool(input), "Cannot open synthetic input");
     size_t inputPeriodHops = 0;
     if (repeatInput) {
@@ -265,7 +300,7 @@ int main(int argc, char** argv) {
     std::vector<double> runTimes(measured), loopTimes(measured), cpuTimes(measured), lateness(measured), completion(measured), budgets(measured);
     uint64_t misses = 0, overBudget = 0;
     Ort::RunOptions runOptions;
-    scheduling::Scheduler scheduler("qos");
+    scheduling::Scheduler scheduler(mode, computationNs);
     scheduler.start();
     const auto epoch = Clock::now() + std::chrono::milliseconds(10);
     for (size_t hop = 0; hop < hops; ++hop) {
@@ -273,6 +308,7 @@ int main(int argc, char** argv) {
       scheduling::waitUntil(due);
       const double cpuBegan = threadSeconds();
       const auto began = Clock::now();
+      scheduler.begin(due, deadline);
       double runMs = 0;
       for (auto& graph : graphs) runMs += graph->run(audio.data() + hop * 256, runOptions);
       if (combined) {
@@ -280,6 +316,7 @@ int main(int argc, char** argv) {
           other[i] = physicalHistory[i] - ((graphs[0]->delivered[i] + graphs[1]->delivered[i]) + graphs[2]->delivered[i]);
         std::copy_n(audio.data() + hop * 256, 256, physicalHistory.data());
       }
+      scheduler.finish();
       const auto ended = Clock::now();
       const double cpuEnded = threadSeconds();
       if (check || hop < static_cast<size_t>(warmup) || hop == hops - 1)
@@ -307,16 +344,19 @@ int main(int argc, char** argv) {
       next = std::copy(other.begin(), other.end(), next);
       std::copy(physicalHistory.begin(), physicalHistory.end(), next);
     }
-    writeFloats(argv[6], snapshot);
-    if (check) writeFloats(std::string(argv[6]) + ".trace", trace);
-    std::ofstream samples(argv[5]);
+    writeFloats(arguments[6], snapshot);
+    if (check) writeFloats(std::string(arguments[6]) + ".trace", trace);
+    std::ofstream samples(arguments[5]);
     samples.precision(12);
     samples << "hop,run_wall_ms,loop_wall_ms,thread_cpu_ms,start_lateness_ms,completion_from_arrival_ms,hop_budget_ms\n";
     for (int i = 0; i < measured; ++i)
       samples << i << ',' << runTimes[i] << ',' << loopTimes[i] << ',' << cpuTimes[i] << ',' << lateness[i] << ',' << completion[i] << ',' << budgets[i] << '\n';
     samples.close(); require(bool(samples), "Cannot write samples");
     std::cout.precision(12);
-    std::cout << "{\"status\":\"completed\",\"paced\":true,\"condition\":\"qos\",\"graphs\":" << graphs.size()
+    std::cout << "{\"status\":\"completed\",\"paced\":true,\"condition\":" << std::quoted(mode)
+      << ",\"graphs\":" << graphs.size()
+      << ",\"profiled\":" << (profileSet ? "true" : "false")
+      << ",\"requested_computation_ns\":" << computationNs
       << ",\"warmup_hops\":" << warmup << ",\"measured_hops\":" << measured << ",\"parity_trace\":" << (check ? "true" : "false")
       << ",\"physical_residual_other\":" << (combined ? "true" : "false")
       << ",\"input_repeated\":" << (repeatInput ? "true" : "false") << ",\"input_period_hops\":" << inputPeriodHops
@@ -328,11 +368,30 @@ int main(int argc, char** argv) {
       << ",\"execution\":\"sequential\",\"provider\":\"CPU\",\"preallocated_tensors\":true"
       << ",\"initial_default_policy\":" << (scheduler.initial.isDefault ? "true" : "false")
       << ",\"final_default_policy\":" << (scheduler.final.isDefault ? "true" : "false")
+      << ",\"workgroup_interval_starts\":" << scheduler.intervalStarts
+      << ",\"workgroup_interval_finishes\":" << scheduler.intervalFinishes
+      << ",\"initial_policy\":{\"period_ticks\":" << scheduler.initial.period
+      << ",\"computation_ticks\":" << scheduler.initial.computation
+      << ",\"constraint_ticks\":" << scheduler.initial.constraint
+      << ",\"preemptible\":" << (scheduler.initial.preemptible ? "true" : "false") << '}'
+      << ",\"final_policy\":{\"period_ticks\":" << scheduler.final.period
+      << ",\"computation_ticks\":" << scheduler.final.computation
+      << ",\"constraint_ticks\":" << scheduler.final.constraint
+      << ",\"preemptible\":" << (scheduler.final.preemptible ? "true" : "false") << '}'
       << ",\"mach_timebase_numer\":" << Clock::numer << ",\"mach_timebase_denom\":" << Clock::denom
       << ",\"deadline_misses\":" << misses << ",\"compute_over_budget\":" << overBudget << ",\"run\":";
     stats(runTimes); std::cout << ",\"loop\":"; stats(loopTimes); std::cout << ",\"thread_cpu\":"; stats(cpuTimes);
     std::cout << ",\"start_lateness\":"; stats(lateness); std::cout << ",\"completion\":"; stats(completion);
-    std::cout << ",\"quality_measured\":false,\"plugin_deadlines_qualified\":false}\n";
+    std::cout << ",\"quality_measured\":false,\"plugin_deadlines_qualified\":false,\"operator_profiles\":[";
+    if (profileSet) {
+      Ort::AllocatorWithDefaultOptions allocator;
+      for (size_t i = 0; i < graphs.size(); ++i) {
+        const auto path = graphs[i]->session.EndProfilingAllocated(allocator);
+        if (i) std::cout << ',';
+        std::cout << std::quoted(path.get());
+      }
+    }
+    std::cout << "]}\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
