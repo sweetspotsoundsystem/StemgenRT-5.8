@@ -17,6 +17,7 @@ from .specialist import SpecialistSeparator
 from .independent import IndependentStems, SOURCE_ORDER
 from ._export.helpers import model_state_sha256, sha
 from ._model.dsp import require
+from ._export.fp32 import _RFFT1024
 
 
 def _exporter(child):
@@ -44,22 +45,37 @@ def interface(model):
 
 
 class _IndependentStreamingWrapper(nn.Module):
-    def __init__(self, model):
+    def __init__(self, model, *, batch_carrier_analysis=False):
         super().__init__()
         self.contract = interface(model)
         self.children_by_source = nn.ModuleDict({source: _exporter(getattr(model, source)).make_export_copy(
             getattr(model, source)) for source in SOURCE_ORDER[:3]})
         self.physical_history_index = self.contract["state_names"].index("vocals_audio_history")
+        self.batch_carrier_analysis = batch_carrier_analysis
 
     def initial_state(self):
         return tuple(value for child in self.children_by_source.values() for value in child.model.initial_state(1))
 
     def forward(self, audio_chunk, *states):
         estimates, next_states = [], []
-        for source in SOURCE_ORDER[:3]:
+        carriers = [None] * 3
+        if self.batch_carrier_analysis:
+            # Retain each child's own history and analysis window, including
+            # deliberately unequal nonzero public states. Only dispatch and
+            # pointwise feature operations are batched; FFT work is unchanged.
+            frames = []
+            for source in SOURCE_ORDER[:3]:
+                child = self.children_by_source[source].model
+                history = states[self.contract["state_names"].index(source + "_audio_history")]
+                joined = torch.cat((history[..., -896:], audio_chunk), -1)
+                frames.append((joined * child.analysis_window).reshape(2, 1024))
+            spectra = _RFFT1024.apply(torch.cat(frames, dim=0)).reshape(3, 2, 1, 513, 2)
+            features = band_export.carrier_features(spectra)
+            carriers = [(spectra[i:i + 1], features[i:i + 1]) for i in range(3)]
+        for source, carrier in zip(SOURCE_ORDER[:3], carriers):
             group = self.contract["state_groups"][source]
             start, count = group["offset"], group["count"]
-            result = self.children_by_source[source](audio_chunk, *states[start:start + count])
+            result = self.children_by_source[source](audio_chunk, *states[start:start + count], carrier=carrier)
             estimates.append(result[0])
             next_states.extend(result[1:])
         # Every child history ends at the previous received input sample.
@@ -69,14 +85,15 @@ class _IndependentStreamingWrapper(nn.Module):
         return torch.cat((*estimates, other[:, None]), dim=1), *next_states
 
 
-def make_export_copy(model):
+def make_export_copy(model, *, batch_carrier_analysis=False):
     interface(model)
     require(all(value.dtype == torch.float32 and bool(torch.isfinite(value).all())
                 for value in model.state_dict().values()), "Export requires finite FP32 model tensors")
-    return _IndependentStreamingWrapper(model).eval().requires_grad_(False)
+    require(type(batch_carrier_analysis) is bool, "batch_carrier_analysis must be bool")
+    return _IndependentStreamingWrapper(model, batch_carrier_analysis=batch_carrier_analysis).eval().requires_grad_(False)
 
 
-def export_fp32(model, destination):
+def export_fp32(model, destination, *, batch_carrier_analysis=False):
     """Export all three children and residual, preserving source tensors and RNG."""
     import onnx
 
@@ -87,7 +104,7 @@ def export_fp32(model, destination):
     before = model_state_sha256(model)
     devices = sorted({value.device.index for value in model.parameters() if value.is_cuda})
     with torch.random.fork_rng(devices=devices), torch.no_grad():
-        wrapper = make_export_copy(model)
+        wrapper = make_export_copy(model, batch_carrier_analysis=batch_carrier_analysis)
         torch.onnx.export(wrapper, (torch.zeros(1, 2, 128), *wrapper.initial_state()), str(destination),
             input_names=contract["input_names"], output_names=contract["output_names"],
             opset_version=17, do_constant_folding=True, dynamo=False)
@@ -103,6 +120,9 @@ def export_fp32(model, destination):
         "output_alignment": "previous_input_hop", "residual": "physical_mixture_minus_((drums+bass)+vocals)",
         "input_level": "unchanged", "sample_rate": 44100, "hop_samples": 128,
         "graph_alignment_samples": 128, "state_count": len(contract["state_names"])}
+    if batch_carrier_analysis:
+        metadata["execution_variant"] = "batched-carrier-analysis-fp32-v1"
+        metadata["analysis_policy"] = "independent histories/windows; batched carrier FFT and per-stem features"
     onnx.helper.set_model_props(graph, {"stemgenrt.experimental": json.dumps(metadata, sort_keys=True)})
     onnx.save(graph, str(destination))
     return {**metadata, "onnx_sha256": sha(destination), "bytes": destination.stat().st_size}

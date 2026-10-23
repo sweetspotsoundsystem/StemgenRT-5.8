@@ -188,3 +188,20 @@ layout-specialized FP32, fused FP32 and selectively quantized candidates from th
 export. They preserve the training weights and 13-state interface. Numerical,
 separation-quality and physical-host measurements remain required before any
 candidate replaces a release.
+
+`independent_export.export_fp32(model, new_path, batch_carrier_analysis=True)`
+also exports an optional FP32 candidate that batches the three short carrier
+FFTs and feature operations. Each stem retains its own history and registered
+window, including unequal nonzero public states. This reduces three carrier DFT
+dispatches to one, while preserving the amount of FFT arithmetic, all learned
+parameters, the complete public state interface, residual formula and latency.
+The default export remains separate analysis. Batched reductions can change
+FP32 rounding; existing waveform/state tolerances still apply.
+
+The candidate uses the same native model, training, objectives, data pipeline,
+optimizer/EMA recovery and evaluation code supplied in this package. It does
+not require retraining or change checkpoints. Export tests compare independent
+PyTorch audio and states through streaming, resets and EOF, check independent
+history/window inputs, and verify learned initializer bytes. It remains an
+execution experiment until profiling and sustained physical-Mac measurements
+show a benefit and the saved deployment graph passes its quality checks.
