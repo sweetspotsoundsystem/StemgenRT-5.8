@@ -13,7 +13,7 @@ import sys
 import traceback
 import zipfile
 
-from analyze import analyze,check_package,compare_trace,markdown,read,require,sha,validate_report
+from analyze import analyze,check_package,compare_trace,markdown,read,require,sha,summarize_profile,validate_report
 HERE=Path(__file__).resolve().parent
 
 
@@ -72,12 +72,19 @@ def run(args,output,manifest):
     result.check_returncode()
     write(output/'binary.json',dict(sha256=sha(binary),dependencies=capture(['otool','-L',str(binary)])))
 
-    def trial(name,case,warmup,measured,check,repeat_input=False):
+    def trial(name,case,warmup,measured,check,repeat_input=False,profiled=False):
         print(f'Running {name}: {measured:,} measured hops',flush=True)
         samples,snapshot=output/(name+'.csv'),output/(name+'.bin')
         models=[HERE/protocol['models'][key]['path'] for key in protocol['cases'][case]]
         action=('check' if check else ('measure_repeat' if repeat_input else 'measure'))+('_combined' if protocol.get('case_assembly',{}).get(case,False) else '')
-        command=[str(binary),str(HERE/protocol['input_file']),str(warmup),str(measured),
+        options=[]
+        if 'scheduling' in protocol:
+            scheduler=protocol['scheduling'][case]
+            require(scheduler['computation_ns']%1000==0,'CPU estimate must be whole microseconds')
+            options=[f"--scheduler={scheduler['mode']}",f"--cpu-budget-us={scheduler['computation_ns']//1000}"]
+        if profiled:
+            options.append('--profile='+str(output/(name+'-ort')))
+        command=[str(binary),*options,str(HERE/protocol['input_file']),str(warmup),str(measured),
                  action,str(samples),str(snapshot),*[str(p) for p in models]]
         started=utc()
         result=subprocess.run(command,capture_output=True,text=True,timeout=60+3*(warmup+measured)*128/44100)
@@ -86,13 +93,22 @@ def run(args,output,manifest):
         write(output/(name+'-execution.json'),dict(command=command,started_utc=started,ended_utc=utc(),returncode=result.returncode))
         result.check_returncode()
         report=json.loads(result.stdout)
-        validate_report(report,protocol,case,warmup,measured,check,repeat_input=repeat_input)
+        validate_report(report,protocol,case,warmup,measured,check,repeat_input=repeat_input,profiled=profiled)
         library=Path(report['loaded_runtime']).resolve(strict=True)
         require(library.is_relative_to(HERE/'sdk/lib'),'Loaded runtime is outside pinned SDK')
         relative=str(library.relative_to(HERE))
         require(relative in manifest['files'] and sha(library)==manifest['files'][relative],'Loaded runtime identity differs')
         report['loaded_runtime_sha256']=sha(library)
         write(output/(name+'.json'),report)
+        if profiled:
+            require(len(report['operator_profiles'])==1,'Expected one operator profile')
+            original=Path(report['operator_profiles'][0])
+            source=original.resolve(strict=True)
+            require(source.parent==output and source==original,'Operator profile outside results or aliased')
+            target=output/(name+'-operators.json')
+            source.rename(target)
+            write(output/(name+'-summary.json'),summarize_profile(target,warmup+measured))
+            compress(target)
         if check:
             trace=Path(str(snapshot)+'.trace')
             parity=compare_trace(trace,protocol,case,HERE)
@@ -109,6 +125,8 @@ def run(args,output,manifest):
     for case in protocol.get('endurance_order',[]):
         trial('endurance-'+case,case,protocol['endurance_warmup_hops'],
               protocol['endurance_measured_hops'],False,repeat_input=True)
+    for case,counts in protocol.get('profiles',{}).items():
+        trial('profile-'+case,case,counts['warmup_hops'],counts['measured_hops'],False,profiled=True)
     require(check_package(HERE)==manifest,'Package changed during measurement')
     summary=analyze(output)
     write(output/'summary.json',summary)

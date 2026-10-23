@@ -78,9 +78,12 @@ struct Policy {
 
 class Scheduler {
  public:
-  explicit Scheduler(std::string mode) : mode_(std::move(mode)) {
+  explicit Scheduler(std::string mode, uint64_t computationNs = 2000000)
+      : mode_(std::move(mode)), computationNs_(computationNs) {
     check(mode_ == "qos" || mode_ == "realtime" || mode_ == "workgroup",
           "Unknown scheduling mode");
+    check(computationNs_ > 0 && computationNs_ < 128ULL * 1000000000 / 44100,
+          "CPU estimate must be positive and shorter than one hop");
   }
   Scheduler(const Scheduler&) = delete;
   Scheduler& operator=(const Scheduler&) = delete;
@@ -107,7 +110,7 @@ class Scheduler {
     }
     if (mode_ != "qos") {
       const auto period = Clock::ticks(128ULL * 1000000000 / 44100);
-      const auto computation = Clock::ticks(2000000);  // Frozen 2 ms CPU estimate.
+      const auto computation = Clock::ticks(computationNs_);
       check(period <= std::numeric_limits<uint32_t>::max(), "Policy tick overflow");
       thread_time_constraint_policy_data_t policy{};
       policy.period = static_cast<uint32_t>(period);
@@ -197,7 +200,7 @@ class Scheduler {
       check(!policy.isDefault && policy.preemptible &&
                 policy.period == Clock::ticks(128ULL * 1000000000 / 44100) &&
                 policy.constraint == policy.period &&
-                policy.computation == Clock::ticks(2000000),
+                policy.computation == Clock::ticks(computationNs_),
             "Real-time scheduling policy readback mismatch");
     } else {
       check(policy.isDefault, "QoS control unexpectedly has real-time policy");
@@ -232,6 +235,7 @@ class Scheduler {
   }
 
   std::string mode_;
+  uint64_t computationNs_;
   bool restoreSucceeded_ = true;
 #if defined(__APPLE__)
   os_workgroup_interval_t group_ = nullptr;

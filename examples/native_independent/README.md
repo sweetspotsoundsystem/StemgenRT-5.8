@@ -97,3 +97,40 @@ continues across input boundaries. The analyzer checks the input period,
 exposure, every raw timing sample, final finite states, and pinned runtime.
 Endurance results appear separately from the shorter trials; both retain the
 original arrival deadlines even when the worker falls behind.
+
+## Compare scheduling with an unchanged graph
+
+`prepare_scheduling.py` takes an authenticated existing packet, its manifest
+SHA256, an explicit model key and graph SHA256, and this checkout's matching
+training source archive. It copies the selected graph and its independent
+PyTorch reference without exporting new weights:
+
+```sh
+python examples/native_independent/prepare_scheduling.py \
+  --source-packet /path/to/verified-packet \
+  --source-manifest-sha256 MANIFEST_SHA256 \
+  --model-key released-fp32 --model-sha256 GRAPH_SHA256 \
+  --training-source dist/stemgenrt-0.7.0.tar.gz \
+  --training-source-sha256 SOURCE_ARCHIVE_SHA256 \
+  --output /allocated/new-scheduling-packet
+```
+
+The resulting packet uses all six permutations of QoS, Mach real-time and
+standalone audio-workgroup scheduling, followed by five minutes of continuous
+state per condition. The Mach computation estimate is fixed at 2.7 ms per
+128-sample hop before the run. Initial and final policy readbacks must match;
+workgroup interval counts must cover every warmup and measured hop. Timing
+keeps the original arrival clock and includes interval bookkeeping. Endpoints
+must be byte-identical across these same-graph conditions.
+
+A separate 80-hop ORT operator profile runs after every timing trial. Its node
+durations include instrumentation and warmup, so they identify work to investigate
+without measuring deadline performance. The analyzer rejects instrumented runs
+from the timing results and independently recomputes operator summaries.
+
+The standalone workgroup does not represent an AU host workgroup. Use the plugin's
+paced callback comparison and physical DAW tests to evaluate that complete path.
+Production scheduling remains unchanged until fresh target-machine evidence
+supports a change. Apple documents the soft real-time behavior in its
+[Mach scheduling guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/KernelProgramming/scheduler/scheduler.html)
+and host collaboration in [Understanding audio workgroups](https://developer.apple.com/documentation/audiotoolbox/understanding-audio-workgroups).

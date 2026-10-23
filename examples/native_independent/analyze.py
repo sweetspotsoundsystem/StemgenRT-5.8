@@ -20,7 +20,11 @@ def sha(path):
 
 
 def read(path):
-    return json.loads(Path(path).read_text())
+    path=Path(path)
+    if path.suffix=='.gz':
+        with gzip.open(path,'rt') as stream:
+            return json.load(stream)
+    return json.loads(path.read_text())
 
 
 def require(condition,message):
@@ -124,15 +128,22 @@ def compare_trace(path,protocol,case,here):
                 reference_scope='same numerical variant, each output and state, every preflight hop')
 
 
-def validate_report(report,protocol,case,warmup,measured,check,*,expected_platform="macos",repeat_input=False):
-    require(report['runtime_platform']==expected_platform and report['status']=='completed' and report['paced'] and report['condition']=='qos'
+def validate_report(report,protocol,case,warmup,measured,check,*,expected_platform="macos",repeat_input=False,profiled=False):
+    scheduling=protocol.get('scheduling',{}).get(case,{'mode':'qos','computation_ns':2000000})
+    mode=scheduling['mode']
+    require(mode in ('qos','realtime','workgroup'),'Unknown scheduling condition')
+    require(report.get('profiled',False) is profiled
+            and bool(report.get('operator_profiles',[])) is profiled,
+            'Instrumented profiling must be separate from timing evidence')
+    require(report['runtime_platform']==expected_platform and report['status']=='completed' and report['paced'] and report['condition']==mode
         and report['graphs']==len(protocol['cases'][case]) and report['warmup_hops']==warmup
         and report['measured_hops']==measured and report['parity_trace'] is check
         and report['onnxruntime_version']==protocol['onnxruntime_version']
         and report['intra_op_threads']==report['inter_op_threads']==1
         and not report['spinning'] and not report['kleidiai']
         and report['provider']=='CPU' and report['execution']=='sequential'
-        and report['preallocated_tensors'] and report['initial_default_policy'] and report['final_default_policy']
+        and report['preallocated_tensors'] and report['initial_default_policy'] is (mode=='qos')
+        and report['final_default_policy'] is (mode=='qos')
         and report['quality_measured'] is False and report['plugin_deadlines_qualified'] is False
         and report['physical_residual_other'] is protocol.get('case_assembly',{}).get(case,False)
         and report.get('graph_embedded_residual_other',False) is protocol.get('embedded_residual_cases',{}).get(case,False)
@@ -140,6 +151,56 @@ def validate_report(report,protocol,case,warmup,measured,check,*,expected_platfo
         and (not repeat_input or report.get('input_period_hops')==protocol['input_period_hops'])
         and report['graph_alignment_samples']==128 and report['host_queue_measured'] is False,
         'Native invocation, provider, policy or scope differs')
+    if 'scheduling' in protocol:
+        require(set(protocol['scheduling'])==set(protocol['cases']), 'Incomplete scheduling protocol')
+        budget=scheduling['computation_ns']
+        require(type(budget) is int and 0<budget<128000000000//44100
+                and report['requested_computation_ns']==budget,'CPU estimate differs')
+        numer,denom=report['mach_timebase_numer'],report['mach_timebase_denom']
+        require(type(numer) is int and type(denom) is int and numer>0 and denom>0,'Invalid Mach timebase')
+        for name in ('initial_policy','final_policy'):
+            policy=report[name]
+            if mode!='qos':
+                period=(128000000000//44100)*denom//numer
+                require(policy==dict(period_ticks=period,computation_ticks=budget*denom//numer,
+                    constraint_ticks=period,preemptible=True),'Real-time policy readback differs')
+        intervals=warmup+measured if mode=='workgroup' else 0
+        require(report['workgroup_interval_starts']==report['workgroup_interval_finishes']==intervals,
+                'Incomplete or unexpected audio-workgroup intervals')
+
+
+def summarize_profile(path,expected_runs):
+    """Operator attribution only: instrumentation invalidates deadline timings."""
+    events=read(path)
+    require(isinstance(events,list),'Invalid ORT profile')
+    runs=[event for event in events if event.get('cat')=='Session' and event.get('name')=='model_run']
+    require(len(runs)==expected_runs,'Operator profile has incomplete graph exposure')
+    totals={}
+    nodes={}
+    for event in events:
+        if event.get('cat')!='Node' or not event.get('name','').endswith('_kernel_time'):
+            continue
+        args=event.get('args',{})
+        require(args.get('provider')=='CPUExecutionProvider','Profile provider differs')
+        duration=event.get('dur')
+        require(isinstance(duration,(int,float)) and math.isfinite(duration) and duration>=0,
+                'Invalid operator duration')
+        op=args.get('op_name')
+        require(isinstance(op,str) and op,'Missing operator identity')
+        for mapping,key in ((totals,op),(nodes,event['name'])):
+            row=mapping.setdefault(key,dict(calls=0,total_us=0.))
+            row['calls']+=1
+            row['total_us']+=duration
+    require(totals,'Empty operator profile')
+    total=sum(row['total_us'] for row in totals.values())
+    require(total>0,'Empty operator durations')
+    for mapping in (totals,nodes):
+        for row in mapping.values():
+            row.update(calls_per_run=row['calls']/expected_runs,mean_us_per_run=row['total_us']/expected_runs,
+                       fraction_of_instrumented_node_time=row['total_us']/total)
+    return dict(scope='Instrumented operator attribution; no deadline or plugin qualification',
+        graph_runs=expected_runs,includes_warmup=True,operators=totals,
+        top_nodes=dict(sorted(nodes.items(),key=lambda item:item[1]['total_us'],reverse=True)[:40]))
 
 
 TIMING_COLUMNS={'run':'run_wall_ms','loop':'loop_wall_ms','thread_cpu':'thread_cpu_ms',
@@ -169,6 +230,15 @@ def validate_samples(output,name,report,measured):
     return rows,misses,over
 
 
+def validate_endpoint(path,protocol,case):
+    expected_size=4*sum(math.prod(shape) for key in protocol['cases'][case]
+                        for shape in protocol['models'][key]['interface']['output_shapes'])
+    if protocol.get('case_assembly',{}).get(case,False):expected_size+=512*4
+    require(path.stat().st_size==expected_size,'Endpoint size differs')
+    require(all(math.isfinite(x) for x in floats(path)),'Nonfinite endpoint')
+    return sha(path)
+
+
 def analyze(output,package=None):
     output=Path(output)
     plan=read(output/'plan.json')
@@ -194,7 +264,7 @@ def analyze(output,package=None):
             report=read(output/(name+'.json'))
             validate_report(report,protocol,case,protocol['warmup_hops'],protocol['measured_hops_per_trial'],False)
             rows,misses,over=validate_samples(output,name,report,protocol['measured_hops_per_trial'])
-            snapshots[case].add(sha(output/(name+'.bin')))
+            snapshots[case].add(validate_endpoint(output/(name+'.bin'),protocol,case))
             runtime_digests.add(report['loaded_runtime_sha256'])
             rows_by_case[case].extend(rows)
             rounds_by_case[case].append(dict(round=index,deadline_misses=misses,compute_over_budget=over,
@@ -215,19 +285,31 @@ def analyze(output,package=None):
                             protocol['endurance_measured_hops'],False,repeat_input=True)
             rows,misses,over=validate_samples(output,name,report,protocol['endurance_measured_hops'])
             snapshot=output/(name+'.bin')
-            expected_size=4*sum(math.prod(shape) for key in protocol['cases'][case]
-                                for shape in protocol['models'][key]['interface']['output_shapes'])
-            if protocol.get('case_assembly',{}).get(case,False):expected_size+=512*4
-            require(snapshot.stat().st_size==expected_size,'Endurance endpoint size differs')
-            require(all(math.isfinite(x) for x in floats(snapshot)),'Nonfinite endurance endpoint')
+            endpoint_digest=validate_endpoint(snapshot,protocol,case)
             runtime_digests.add(report['loaded_runtime_sha256'])
             endurance[case]={key:stats([r[column] for r in rows]) for key,column in mapping.items()}
             endurance[case].update(measured_hops=len(rows),deadline_misses=misses,compute_over_budget=over,
-                input_period_hops=period,continuous_state=True,endpoint_sha256=sha(snapshot),
+                input_period_hops=period,continuous_state=True,endpoint_sha256=endpoint_digest,
                 nominal_audio_seconds=len(rows)*128/44100)
     require(len(runtime_digests)==1 and all(len(v)==1 for v in snapshots.values()),'Runtime or repeat endpoint differs')
     expected_runtime={v for k,v in plan['package_manifest']['files'].items() if k.startswith('sdk/lib/')}
     require(runtime_digests<=expected_runtime,'Loaded runtime is outside pinned package')
+    if protocol.get('identical_graph_across_conditions',False):
+        require(len({tuple(keys) for keys in protocol['cases'].values()})==1,'Scheduling graphs differ')
+        require(len(set.union(*snapshots.values()))==1,'Scheduling conditions changed final tensors')
+        if endurance:
+            require(len({row['endpoint_sha256'] for row in endurance.values()})==1,
+                    'Scheduling conditions changed endurance final tensors')
+    profiles={}
+    for case,counts in protocol.get('profiles',{}).items():
+        name='profile-'+case
+        report=read(output/(name+'.json'))
+        validate_report(report,protocol,case,counts['warmup_hops'],counts['measured_hops'],False,profiled=True)
+        require(report['loaded_runtime_sha256'] in runtime_digests,'Profile runtime differs')
+        require(len(report['operator_profiles'])==1,'Expected one operator profile')
+        calculated=summarize_profile(output/(name+'-operators.json.gz'),counts['warmup_hops']+counts['measured_hops'])
+        require(calculated==read(output/(name+'-summary.json')),'Operator profile summary differs')
+        profiles[case]=calculated
     cases={}
     for case,rows in rows_by_case.items():
         require(len(rows)==protocol['measured_hops_per_case'],'Case exposure differs')
@@ -235,6 +317,7 @@ def analyze(output,package=None):
         cases[case].update(measured_hops=len(rows),deadline_misses=sum(r['completion_from_arrival_ms']>r['hop_budget_ms'] for r in rows),
             compute_over_budget=sum(r['loop_wall_ms']>r['hop_budget_ms'] for r in rows),rounds=rounds_by_case[case])
     return dict(schema='independent-stem-m4-worker-cost-results-v1',chip=plan['chip'],cases=cases,endurance=endurance,
+        operator_profiles=profiles,
         hop_budget_ms=128000/44100,quality_measured=False,plugin_deadlines_qualified=False,
         all_three_stems_trained=protocol.get('all_three_stems_trained',False),
         interpretation=protocol['interpretation'],three_model_case=protocol['three_model_case'])

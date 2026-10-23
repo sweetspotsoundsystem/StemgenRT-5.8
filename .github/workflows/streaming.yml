@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   parity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -28,8 +28,8 @@ jobs:
         run: python -m pytest tests/test_streaming.py tests/test_download_streaming_model.py -q
 
   pipeline:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     env:
       CUDA_VISIBLE_DEVICES: ''
       OMP_NUM_THREADS: '1'
@@ -42,6 +42,8 @@ jobs:
           python-version: '3.12'
       - name: Install CPU training, export and audio dependencies
         run: |
+          # Keep signed Ubuntu packages; avoid the hosted Azure mirror's slow downloads.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           ffmpeg -hide_banner -filters | grep rubberband
