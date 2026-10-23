@@ -123,6 +123,16 @@ workgroup interval counts must cover every warmup and measured hop. Timing
 keeps the original arrival clock and includes interval bookkeeping. Endpoints
 must be byte-identical across these same-graph conditions.
 
+Each benchmark process runs one scheduling condition. Cleanup restores and
+checks standard Mach scheduling, then lets that process exit. It does not
+reapply pthread QoS after Mach scheduling: Apple's
+[pthread QoS contract](https://github.com/apple-oss-distributions/libpthread/blob/main/include/pthread/qos.h)
+documents permanent QoS opt-out after incompatible scheduling changes. The
+previous cleanup attempted that unsupported transition and could discard an
+otherwise completed real-time preflight. The macOS CI lifecycle regression
+exercises QoS, real-time and workgroup start/stop on fresh threads, including
+policy readbacks and interval cleanup. This regression is not a timing test.
+
 A separate 80-hop ORT operator profile runs after every timing trial. Its node
 durations include instrumentation and warmup, so they identify work to investigate
 without measuring deadline performance. The analyzer rejects instrumented runs

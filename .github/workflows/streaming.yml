@@ -10,6 +10,18 @@ permissions:
   contents: read
 
 jobs:
+  macos-scheduling:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check native scheduling lifecycle with actual macOS APIs
+        run: |
+          xcrun clang++ -std=c++20 -O2 -fblocks -mmacosx-version-min=14.0 \
+            -Wall -Wextra -Werror examples/native_independent/scheduling_lifecycle.cpp \
+            -framework AudioToolbox -pthread -o "$RUNNER_TEMP/scheduling-lifecycle"
+          "$RUNNER_TEMP/scheduling-lifecycle"
+
   parity:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
