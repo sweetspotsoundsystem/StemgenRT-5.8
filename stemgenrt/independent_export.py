@@ -15,7 +15,7 @@ from . import band_export, specialist_export
 from .banded import BandSeparator
 from .specialist import SpecialistSeparator
 from .independent import IndependentStems, SOURCE_ORDER
-from ._export.helpers import model_state_sha256, sha
+from ._export.helpers import OneFrameGRUForONNX, model_state_sha256, sha
 from ._model.dsp import require
 from ._export.fp32 import _RFFT1024
 
@@ -45,13 +45,16 @@ def interface(model):
 
 
 class _IndependentStreamingWrapper(nn.Module):
-    def __init__(self, model, *, batch_carrier_analysis=False):
+    def __init__(self, model, *, batch_carrier_analysis=False, batch_gru_gates=False):
         super().__init__()
         self.contract = interface(model)
         self.children_by_source = nn.ModuleDict({source: _exporter(getattr(model, source)).make_export_copy(
             getattr(model, source)) for source in SOURCE_ORDER[:3]})
         self.physical_history_index = self.contract["state_names"].index("vocals_audio_history")
         self.batch_carrier_analysis = batch_carrier_analysis
+        for module in self.children_by_source.modules():
+            if isinstance(module, OneFrameGRUForONNX):
+                module.batch_gates = batch_gru_gates
 
     def initial_state(self):
         return tuple(value for child in self.children_by_source.values() for value in child.model.initial_state(1))
@@ -85,15 +88,17 @@ class _IndependentStreamingWrapper(nn.Module):
         return torch.cat((*estimates, other[:, None]), dim=1), *next_states
 
 
-def make_export_copy(model, *, batch_carrier_analysis=False):
+def make_export_copy(model, *, batch_carrier_analysis=False, batch_gru_gates=False):
     interface(model)
     require(all(value.dtype == torch.float32 and bool(torch.isfinite(value).all())
                 for value in model.state_dict().values()), "Export requires finite FP32 model tensors")
     require(type(batch_carrier_analysis) is bool, "batch_carrier_analysis must be bool")
-    return _IndependentStreamingWrapper(model, batch_carrier_analysis=batch_carrier_analysis).eval().requires_grad_(False)
+    require(type(batch_gru_gates) is bool, "batch_gru_gates must be bool")
+    return _IndependentStreamingWrapper(model, batch_carrier_analysis=batch_carrier_analysis,
+        batch_gru_gates=batch_gru_gates).eval().requires_grad_(False)
 
 
-def export_fp32(model, destination, *, batch_carrier_analysis=False):
+def export_fp32(model, destination, *, batch_carrier_analysis=False, batch_gru_gates=False):
     """Export all three children and residual, preserving source tensors and RNG."""
     import onnx
 
@@ -104,7 +109,8 @@ def export_fp32(model, destination, *, batch_carrier_analysis=False):
     before = model_state_sha256(model)
     devices = sorted({value.device.index for value in model.parameters() if value.is_cuda})
     with torch.random.fork_rng(devices=devices), torch.no_grad():
-        wrapper = make_export_copy(model, batch_carrier_analysis=batch_carrier_analysis)
+        wrapper = make_export_copy(model, batch_carrier_analysis=batch_carrier_analysis,
+                                   batch_gru_gates=batch_gru_gates)
         torch.onnx.export(wrapper, (torch.zeros(1, 2, 128), *wrapper.initial_state()), str(destination),
             input_names=contract["input_names"], output_names=contract["output_names"],
             opset_version=17, do_constant_folding=True, dynamo=False)
@@ -123,6 +129,10 @@ def export_fp32(model, destination, *, batch_carrier_analysis=False):
     if batch_carrier_analysis:
         metadata["execution_variant"] = "batched-carrier-analysis-fp32-v1"
         metadata["analysis_policy"] = "independent histories/windows; batched carrier FFT and per-stem features"
+    if batch_gru_gates:
+        metadata["execution_variant"] = ("batched-carrier-and-gru-gates-fp32-v1" if batch_carrier_analysis
+                                         else "batched-gru-gates-fp32-v1")
+        metadata["gru_gate_policy"] = "independent reset/update elementwise operations batched; separate input/hidden affine operations and recurrence arithmetic preserved"
     onnx.helper.set_model_props(graph, {"stemgenrt.experimental": json.dumps(metadata, sort_keys=True)})
     onnx.save(graph, str(destination))
     return {**metadata, "onnx_sha256": sha(destination), "bytes": destination.stat().st_size}
