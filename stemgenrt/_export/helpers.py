@@ -51,8 +51,10 @@ class RMSNormForONNX(nn.Module):
 class OneFrameGRUForONNX(nn.Module):
     """Exact, exportable GRU recurrence for the one-frame one-hop streaming graph."""
 
-    def __init__(self, original: nn.GRU):
+    def __init__(self, original: nn.GRU, *, batch_gates: bool = False):
         super().__init__()
+        require(type(batch_gates) is bool, "batch_gates must be bool")
+        self.batch_gates = batch_gates
         if not original.batch_first:
             raise ValueError("one-hop streaming export requires a batch-first GRU")
         if original.bidirectional:
@@ -87,10 +89,19 @@ class OneFrameGRUForONNX(nn.Module):
                 getattr(self, f"weight_hh_l{layer}"),
                 getattr(self, f"bias_hh_l{layer}"),
             )
-            input_reset, input_update, input_new = input_gates.chunk(3, dim=-1)
-            hidden_reset, hidden_update, hidden_new = hidden_gates.chunk(3, dim=-1)
-            reset = torch.sigmoid(input_reset + hidden_reset)
-            update = torch.sigmoid(input_update + hidden_update)
+            if self.batch_gates:
+                # Keep both affine operations and every scalar expression in
+                # their original order. Only the independent reset/update
+                # Add and Sigmoid dispatches share one tensor operation.
+                sizes = (2 * self.hidden_size, self.hidden_size)
+                input_pair, input_new = input_gates.split(sizes, dim=-1)
+                hidden_pair, hidden_new = hidden_gates.split(sizes, dim=-1)
+                reset, update = torch.sigmoid(input_pair + hidden_pair).chunk(2, dim=-1)
+            else:
+                input_reset, input_update, input_new = input_gates.chunk(3, dim=-1)
+                hidden_reset, hidden_update, hidden_new = hidden_gates.chunk(3, dim=-1)
+                reset = torch.sigmoid(input_reset + hidden_reset)
+                update = torch.sigmoid(input_update + hidden_update)
             candidate = torch.tanh(input_new + reset * hidden_new)
             current = candidate + update * (previous - candidate)
             next_hidden.append(current)
