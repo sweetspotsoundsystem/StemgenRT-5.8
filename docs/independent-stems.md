@@ -205,3 +205,27 @@ PyTorch audio and states through streaming, resets and EOF, check independent
 history/window inputs, and verify learned initializer bytes. It remains an
 execution experiment until profiling and sustained physical-Mac measurements
 show a benefit and the saved deployment graph passes its quality checks.
+
+## Experimental execution on three workers
+
+`python -m stemgenrt.partition_independent parent.onnx output-directory` extracts
+Drums, Bass and Vocals from the existing thirteen-state FP32 ONNX graph. It
+retains each original node and initializer byte, adds an output Identity, and
+rejects a dependency on another stem's recurrent states. The three graphs carry
+five, four and four states respectively. No model parameter, training objective,
+data pipeline or checkpoint format changes. The full matching training and
+recovery code remains in this distribution.
+
+A host can run the three graphs concurrently on persistent workers, with one ORT
+thread per session. It must preserve hop order within each graph, gather all
+three results from the same epoch and hop, and compute physical residual Other
+as `previous_input - ((drums + bass) + vocals)`. Only publish after every branch
+finishes. Audio callbacks must remain nonblocking; late results follow the
+existing timestamp/fallback policy. Reset and final-flush rules remain unchanged.
+
+The experimental plugin uses its existing inference worker for Bass plus two
+helpers for Drums/Vocals. This is an execution experiment, not a trained-model
+revision or demonstrated speedup. The one-worker deployment remains the default.
+Waveform/state parity, reset/EOF behavior, sustained physical M4/M4 Pro deadlines
+and installed DAW behavior must be measured before promotion. Multiple plugin
+instances multiply the number of workers and may worsen contention.
