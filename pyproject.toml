@@ -1,6 +1,6 @@
 [project]
 name = "StemgenRT"
-version = "0.7.0"
+version = "0.8.0"
 description = "StemgenRT-5.8 streaming music separation, training and export"
 authors = [{ name = "Phil Wang", email = "lucidrains@gmail.com" }]
 maintainers = [{ name = "Axel Delafosse" }]
@@ -46,7 +46,7 @@ packages = ["stemgenrt"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "stemgenrt", "README.md", "LICENSE", "pyproject.toml", "docs", "CONTRIBUTING.md",
+    "stemgenrt", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml", "docs", "CONTRIBUTING.md",
     "configs", "scripts", "tests", "models/README.md", "examples", "train_streaming.py",
 ]
 exclude = [

@@ -206,12 +206,15 @@ history/window inputs, and verify learned initializer bytes. It remains an
 execution experiment until profiling and sustained physical-Mac measurements
 show a benefit and the saved deployment graph passes its quality checks.
 
-## Experimental execution on three workers
+## Execution on three workers
 
 `python -m stemgenrt.partition_independent parent.onnx output-directory` extracts
 Drums, Bass and Vocals from the existing thirteen-state FP32 ONNX graph. It
 retains each original node and initializer byte, adds an output Identity, and
-rejects a dependency on another stem's recurrent states. The three graphs carry
+rejects a dependency on another stem's recurrent states. It also verifies the
+parent's literal residual arithmetic and vocal-history update before allowing
+the host to replace the Other computation. Unsupported residual layouts fail
+before any partition directory is written. The three graphs carry
 five, four and four states respectively. No model parameter, training objective,
 data pipeline or checkpoint format changes. The full matching training and
 recovery code remains in this distribution.
@@ -223,9 +226,11 @@ as `previous_input - ((drums + bass) + vocals)`. Only publish after every branch
 finishes. Audio callbacks must remain nonblocking; late results follow the
 existing timestamp/fallback policy. Reset and final-flush rules remain unchanged.
 
-The experimental plugin uses its existing inference worker for Bass plus two
-helpers for Drums/Vocals. This is an execution experiment, not a trained-model
-revision or demonstrated speedup. The one-worker deployment remains the default.
-Waveform/state parity, reset/EOF behavior, sustained physical M4/M4 Pro deadlines
-and installed DAW behavior must be measured before promotion. Multiple plugin
-instances multiply the number of workers and may worsen contention.
+The 0.8.0 plugin uses its existing inference worker for Bass plus two helpers
+for Drums/Vocals by default; each ORT session remains single-threaded. The
+single-worker mode remains available for diagnostics. The model weights and
+training recipe are unchanged. The matching plugin documents M4 sustained,
+M1 Pro quick, and Ryzen Windows [measurements and remaining limits](https://github.com/sweetspotsoundsystem/stemgen-rt/blob/main/docs/parallel-workers.md).
+Those results concern the exact released parent and partitions, not arbitrary
+new exports. Multiple plugin instances multiply the workers and may worsen
+contention. Installed DAW behavior remains distinct from standalone evidence.

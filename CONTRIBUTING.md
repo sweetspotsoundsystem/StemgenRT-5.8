@@ -1,6 +1,6 @@
 # Contributing
 
-StemgenRT 0.7.0 uses independent Drums/Bass/Vocals models with residual Other,
+StemgenRT 0.8.0 retains the independent Drums/Bass/Vocals models introduced in 0.7.0, with residual Other,
 13 states, stereo 44.1 kHz input and 128-sample hops. Keep model definitions
 together with matching training, data, objectives, recovery, evaluation and
 export support. Preserve the legacy eight-state API for existing checkpoints.
@@ -40,7 +40,7 @@ download URL, checksum and matching waveform fixtures together.
 
 Describe the user-visible change and validation in the pull request. Use a
 squash merge for a focused release change. Python package versions are separate
-from the model's 5.8 ms latency suffix; version 0.7.0 matches plugin v0.7.0.
+from the model's 5.8 ms latency suffix; version 0.8.0 matches plugin v0.8.0.
 
 
 ## Comparing a research update
