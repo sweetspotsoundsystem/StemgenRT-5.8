@@ -7,7 +7,6 @@ unchanged. It is not an export of new weights or a timing qualification.
 """
 from __future__ import annotations
 import argparse
-import copy
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +19,92 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _validate_host_residual(model, terminal):
+    """Prove the residual arithmetic and history update that the host replaces.
+
+    Accept the explicit FP32 export layout. A graph with another residual or
+    alignment must keep its parent execution until it has a matching host.
+    No graph operations are rewritten by this validation.
+    """
+    import numpy as np
+    from onnx import helper, numpy_helper, TensorProto
+
+    nodes = {output: node for node in model.graph.node for output in node.output}
+    constants = {tensor.name: tensor for tensor in model.graph.initializer}
+
+    def require(condition, detail):
+        if not condition:
+            raise ValueError('Unsupported parent residual: ' + detail)
+
+    def node(name, operation, inputs):
+        result = nodes.get(name)
+        require(result is not None and result.op_type == operation
+                and result.domain in ('', 'ai.onnx') and len(result.input) == inputs,
+                'expected ' + operation)
+        return result
+
+    def attribute(value, name, default=None):
+        return next((helper.get_attribute_value(a) for a in value.attribute
+                     if a.name == name), default)
+
+    def integer(name):
+        tensor = constants.get(name)
+        if tensor is None:
+            tensor = attribute(node(name, 'Constant', 0), 'value')
+        require(isinstance(tensor, TensorProto) and tensor.data_type == TensorProto.INT64,
+                'expected a constant int64 index')
+        return numpy_helper.to_array(tensor)
+
+    def equal_index(name, expected):
+        return np.array_equal(integer(name), np.asarray(expected, dtype=np.int64))
+
+    def shape(name):
+        value = next((v for v in model.graph.input if v.name == name), None)
+        require(value is not None and value.type.tensor_type.elem_type == TensorProto.FLOAT,
+                'expected a float32 input')
+        return [d.dim_value for d in value.type.tensor_type.shape.dim]
+
+    def tail(name, source, source_length, length):
+        sliced = node(name, 'Slice', 5)
+        require(sliced.input[0] == source
+                and (equal_index(sliced.input[1], [-length])
+                     or equal_index(sliced.input[1], [source_length - length]))
+                and (equal_index(sliced.input[2], [np.iinfo(np.int64).max])
+                     or equal_index(sliced.input[2], [source_length]))
+                and (equal_index(sliced.input[3], [2]) or equal_index(sliced.input[3], [-1]))
+                and equal_index(sliced.input[4], [1]), 'expected the literal trailing samples')
+
+    require(shape('audio_chunk') == [1, 2, 128], 'expected stereo 128-sample input')
+    history = 'vocals_audio_history'
+    dimensions = shape(history)
+    require(len(dimensions) == 3 and dimensions[:2] == [1, 2] and dimensions[2] >= 128,
+            'expected a vocal audio history of at least one hop')
+    history_length = dimensions[2]
+    expanded = node(terminal.input[3], 'Unsqueeze', 2)
+    require(equal_index(expanded.input[1], [1]), 'expected the Other source axis')
+    subtraction = node(expanded.input[0], 'Sub', 2)
+    tail(subtraction.input[0], history, history_length, 128)
+    total = node(subtraction.input[1], 'Add', 2)
+    drums_bass = node(total.input[0], 'Add', 2)
+    for selected, branch in zip([*drums_bass.input, total.input[1]], terminal.input[:3]):
+        gathered = node(selected, 'Gather', 2)
+        require(gathered.input[0] == branch and attribute(gathered, 'axis', 0) == 1
+                and equal_index(gathered.input[1], 0), 'expected ((drums + bass) + vocals)')
+
+    # A literal previous-input residual also requires the carried history to
+    # end with the current audio chunk on every successful step.
+    next_history = nodes.get('next_' + history)
+    if history_length == 128 and next_history is not None and next_history.op_type == 'Identity':
+        require(list(node('next_' + history, 'Identity', 1).input) == ['audio_chunk'],
+                'history must retain the current input')
+    else:
+        sliced = node('next_' + history, 'Slice', 5)
+        joined = node(sliced.input[0], 'Concat', 2)
+        require(list(joined.input) == [history, 'audio_chunk']
+                and attribute(joined, 'axis') in (-1, 2), 'history must append the current input')
+        tail('next_' + history, sliced.input[0], history_length + 128, history_length)
+
+
 def partition_model(source, destination):
     import onnx
     from onnx import helper, TensorProto
@@ -27,7 +112,11 @@ def partition_model(source, destination):
     source, destination = Path(source), Path(destination)
     if destination.exists():
         raise ValueError('Preserve existing partitions')
-    model = onnx.load(source, load_external_data=False)
+    # Deserialize exactly the bytes whose identity is recorded, including if
+    # another process replaces the source during conversion.
+    source_bytes = source.read_bytes()
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    model = onnx.load_model_from_string(source_bytes)
     onnx.checker.check_model(model)
     if any(t.data_location == TensorProto.EXTERNAL for t in model.graph.initializer):
         raise ValueError('Require a self-contained parent')
@@ -41,11 +130,11 @@ def partition_model(source, destination):
     if (len(terminal) != 1 or terminal[0].op_type != 'Concat' or len(terminal[0].input) != 4
             or {a.name: helper.get_attribute_value(a) for a in terminal[0].attribute}.get('axis') != 1):
         raise ValueError('Require final DBV/Other concatenation along source axis')
+    _validate_host_residual(model, terminal[0])
     # Expose already-existing branch tensors; never re-export/reassociate math.
     for tensor in terminal[0].input[:3]:
         if not any(v.name == tensor for v in model.graph.value_info):
             model.graph.value_info.append(helper.make_tensor_value_info(tensor, TensorProto.FLOAT, [1, 1, 2, 128]))
-    source_hash = sha(source)
     prepared, records = [], []
     offset = 0
     for index, (stem, count) in enumerate(zip(SOURCES, COUNTS)):

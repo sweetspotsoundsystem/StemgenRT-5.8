@@ -1,10 +1,13 @@
 # StemgenRT-5.8
 
 Model, training and inference code for [StemgenRT](https://github.com/sweetspotsoundsystem/stemgen-rt).
-Version **0.7.0** uses three independently trained models for **Drums, Bass and
+Version **0.8.0** retains the three independently trained models introduced in
+0.7.0 for **Drums, Bass and
 Vocals**, with **Other = mixture − Drums − Bass − Vocals**. Each model owns its
 parameters and recurrent state. The released graph combines all three in one
-self-contained FP32 ONNX file.
+self-contained FP32 ONNX file. This checkout prepares the 0.8.0 software release;
+the model weights and immutable download identity remain unchanged. Exact graph
+partitions support the plugin's three-worker deployment.
 
 Stereo 44.1 kHz audio is processed in 128-sample hops with 13 persistent states.
 The graph delays audio by 128 samples. The plug-in's worker reserve adds 128
@@ -61,8 +64,14 @@ with `BandSeparator` and `SpecialistSeparator` for the new architecture.
 
 The listening comparison favored cleaner vocals, better vocal silence and less
 vocal bleed in drums and bass. Other can contain stronger residual errors.
-Physical M4/M4 Pro sustained real-time performance remains unmeasured for this
-graph; the latency figure is not a CPU deadline guarantee.
+The matching three-worker plugin passed balanced M4 sustained standalone
+playback (60 measured minutes per mode) and an M1 Pro quick comparison.
+The Ryzen 5 5500 Windows comparison improved substantially but retained
+underruns at both tested host buffers. M4 Ableton stability is a user report;
+other CPUs, DAWs and multiple-instance loads are not thereby qualified.
+See the plugin's [runtime evidence](https://github.com/sweetspotsoundsystem/stemgen-rt/blob/main/docs/parallel-workers.md).
+These results do not describe the synchronous Python API, and the latency
+figure is not a CPU deadline guarantee.
 
 This is a divergent fork of [Phil Wang's HS-TasNet implementation](https://github.com/lucidrains/HS-TasNet),
 with a different model and Python API. See [provenance and migration](docs/provenance.md).
