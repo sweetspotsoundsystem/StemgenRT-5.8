@@ -51,6 +51,15 @@ class _IRFFT1024(torch.autograd.Function):
         return result.setType(spectrum.type().with_sizes([spectrum.type().sizes()[0], 1024]))
 
 
+def carrier_features(spectrum):
+    """Per-example carrier features; batching never mixes stem statistics."""
+    power = spectrum[..., 0].square() + spectrum[..., 1].square()
+    scale = power.mean((1, 3), keepdim=True).clamp_min(1e-8).sqrt()
+    normalized = spectrum / scale.unsqueeze(-1)
+    features = torch.cat((normalized, torch.log1p((power + 1e-12).sqrt() / scale).unsqueeze(-1)), -1)
+    return features.permute(0, 2, 1, 3, 4)
+
+
 def interface(model):
     require(type(model) is BandSeparator, "Expected the experimental band separator")
     states = model.initial_state(1)
@@ -66,16 +75,15 @@ class _BandStreamingWrapper(nn.Module):
         super().__init__()
         self.model = copied
 
-    def forward(self, audio_chunk, audio_history, local_hidden, global_hidden, spectral_numerator_tail):
+    def forward(self, audio_chunk, audio_history, local_hidden, global_hidden, spectral_numerator_tail, carrier=None):
         model = self.model
         joined = torch.cat((audio_history, audio_chunk), -1)
-        spectrum = _RFFT1024.apply((joined[..., -1024:] * model.analysis_window).reshape(2, 1024))
-        spectrum = spectrum.reshape(1, 2, 1, 513, 2)
-        power = spectrum[..., 0].square() + spectrum[..., 1].square()
-        scale = power.mean((1, 3), keepdim=True).clamp_min(1e-8).sqrt()
-        normalized = spectrum / scale.unsqueeze(-1)
-        features = torch.cat((normalized, torch.log1p((power + 1e-12).sqrt() / scale).unsqueeze(-1)), -1)
-        features = features.permute(0, 2, 1, 3, 4)
+        if carrier is None:
+            spectrum = _RFFT1024.apply((joined[..., -1024:] * model.analysis_window).reshape(2, 1024))
+            spectrum = spectrum.reshape(1, 2, 1, 513, 2)
+            features = carrier_features(spectrum)
+        else:
+            spectrum, features = carrier
         if model.feature_n_fft == 4096:
             long_spectrum = _RFFT4096.apply((joined * model.long_analysis_window).reshape(2, 4096))
             long_spectrum = long_spectrum.reshape(1, 2, 1, 2049, 2)

@@ -14,7 +14,7 @@ from torch import nn
 from ._export.fp32 import _RFFT1024
 from ._export.helpers import OneFrameGRUForONNX, replace_rmsnorm_layers, model_state_sha256, sha
 from ._model.dsp import require
-from .band_export import _IRFFT1024, _RFFT4096
+from .band_export import _IRFFT1024, _RFFT4096, carrier_features
 from .specialist import SpecialistSeparator
 
 
@@ -33,17 +33,16 @@ class _SpecialistStreamingWrapper(nn.Module):
         super().__init__()
         self.model = copied
 
-    def forward(self, audio_chunk, *states):
+    def forward(self, audio_chunk, *states, carrier=None):
         model = self.model
         audio_history, local_hidden, global_hidden, spectral_tail = states[:4]
         joined = torch.cat((audio_history, audio_chunk), -1)
-        spectrum = _RFFT1024.apply((joined[..., -1024:] * model.analysis_window).reshape(2, 1024))
-        spectrum = spectrum.reshape(1, 2, 1, 513, 2)
-        power = spectrum[..., 0].square() + spectrum[..., 1].square()
-        scale = power.mean((1, 3), keepdim=True).clamp_min(1e-8).sqrt()
-        normalized = spectrum / scale.unsqueeze(-1)
-        features = torch.cat((normalized, torch.log1p((power + 1e-12).sqrt() / scale).unsqueeze(-1)), -1)
-        features = features.permute(0, 2, 1, 3, 4)
+        if carrier is None:
+            spectrum = _RFFT1024.apply((joined[..., -1024:] * model.analysis_window).reshape(2, 1024))
+            spectrum = spectrum.reshape(1, 2, 1, 513, 2)
+            features = carrier_features(spectrum)
+        else:
+            spectrum, features = carrier
         long_features = None
         if model.feature_n_fft == 4096:
             long_spectrum = _RFFT4096.apply((joined * model.long_analysis_window).reshape(2, 4096))
