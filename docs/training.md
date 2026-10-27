@@ -221,3 +221,13 @@ When exporting a qualifying final endpoint with the released bass and vocals,
 pass `--drums-updates 8000 --drums-parent-updates 40000` to
 `scripts/export_independent_model.py`, keeping `--expected-updates 40000` for the
 fixed stems. Export validates each stem's ancestry and interface independently.
+
+## Released inventory and reconstruction limits
+
+The [model card](../MODEL_CARD.md) identifies the three missing MUSDB songs,
+MoisesDB, the duplicate exclusion, and the separate baseline lineage. The
+[portable inventory](../configs/released-training-inventory.json) preserves all
+301 selected recordings and prepared-file identities. The [reference Moises
+converter](benchmark.md) is new code with an explicit conversion policy; the
+historical raw conversion script is not available, so it is not a claim of
+byte-identical data reproduction. Native training checkpoints are not distributed.

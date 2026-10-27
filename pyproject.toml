@@ -2,7 +2,7 @@
 name = "StemgenRT"
 version = "0.8.0"
 description = "StemgenRT-5.8 streaming music separation, training and export"
-authors = [{ name = "Phil Wang", email = "lucidrains@gmail.com" }]
+authors = [{ name = "Axel Delafosse" }]
 maintainers = [{ name = "Axel Delafosse" }]
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,6 +25,7 @@ streaming = ["onnxruntime==1.26.0", "soundfile>=0.12"]
 training = ["torch==2.8.0", "soundfile>=0.12"]
 teacher = ["torch==2.8.0", "torchaudio==2.8.0", "julius==0.2.7", "demucs @ https://github.com/facebookresearch/demucs/archive/e976d93ecc3865e5757426930257e200846a520a.zip"]
 onnx = ["torch==2.8.0", "onnx==1.19.1", "onnxruntime==1.26.0"]
+benchmark = ["museval==0.4.1", "numpy==2.2.6", "soundfile>=0.12"]
 test = ["pytest>=8"]
 
 [project.scripts]
@@ -47,6 +48,7 @@ packages = ["stemgenrt"]
 [tool.hatch.build.targets.sdist]
 include = [
     "stemgenrt", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml", "docs", "CONTRIBUTING.md",
+    "MODEL_CARD.md", "WEIGHTS-LICENSE.md", "CITATION.cff", "licenses",
     "configs", "scripts", "tests", "models/README.md", "examples", "train_streaming.py",
 ]
 exclude = [

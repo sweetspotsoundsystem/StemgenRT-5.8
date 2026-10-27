@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "Please cite this software. The manuscript has not been published."
+type: software
+title: "StemgenRT: streaming music separation, training and export"
+authors:
+  - family-names: Delafosse
+    given-names: Axel
+repository-code: "https://github.com/sweetspotsoundsystem/StemgenRT-5.8"
+url: "https://github.com/sweetspotsoundsystem/StemgenRT-5.8"
+license: MIT
+abstract: "Software code only; model weights and datasets have separate terms."
