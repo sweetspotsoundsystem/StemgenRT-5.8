@@ -31,13 +31,16 @@ reconstructs the mixture within FP32 rounding; it does not guarantee perfect
 source recovery. Do not normalize, clip or rescale input or recurrent states.
 Use ONNX Runtime 1.26.0 CPU with the wrapper's one-thread settings.
 
-## Previous release and custom exports
+## Local legacy copies and custom exports
 
-```sh
-python scripts/download_streaming_model.py --release v0.6.2
-```
+The v0.6.x plugin release attachments and the v0.6.2 model download have been
+withdrawn pending provenance and rights review. The downloader refuses
+`--release v0.6.2`. Its checksum and eight-state interface remain in the registry
+for identifying existing local copies and documenting the historical baseline;
+they are not a download offer or a grant of rights. See the
+[weights notice](../WEIGHTS-LICENSE.md).
 
-This saves `models/hop128-v0.6.2.onnx`. Pass its recorded SHA-256 explicitly to
+For an existing local copy, pass its recorded SHA-256 explicitly to
 `StreamingSeparator`. Its eight-state native class remains `StemgenRT58`.
 Custom exports also require an explicit SHA-256 and an exact supported
 13-state or legacy eight-state interface. States cannot be carried between

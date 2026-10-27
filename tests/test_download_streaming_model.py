@@ -34,10 +34,10 @@ def test_interrupted_download_leaves_no_partial_model(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("release", ["current", "v0.6.2"])
-def test_download_reuses_verified_current_model(tmp_path, monkeypatch, release):
+def test_download_reuses_verified_current_model(tmp_path, monkeypatch):
     import hashlib
 
+    release = "current"
     payload = b"current model bytes"
     selected = {**model_download.MODELS[release], "bytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest()}
@@ -55,3 +55,23 @@ def test_download_reuses_verified_current_model(tmp_path, monkeypatch, release):
     assert model_download.download(path, release=release) == path
     assert urls == [selected["url"]]
     assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_withdrawn_model_does_not_connect_or_touch_destination(tmp_path, monkeypatch, existing):
+    path = tmp_path / "nested" / "legacy.onnx"
+    if existing:
+        path.parent.mkdir()
+        path.write_bytes(b"user's local copy")
+
+    def unexpected_connection(*args, **kwargs):
+        pytest.fail("A withdrawn model must never open a network connection")
+
+    monkeypatch.setattr(model_download, "urlopen", unexpected_connection)
+    with pytest.raises(ValueError, match="withdrawn pending provenance and rights review"):
+        model_download.download(path, release="v0.6.2")
+    if existing:
+        assert path.read_bytes() == b"user's local copy"
+        assert list(path.parent.iterdir()) == [path]
+    else:
+        assert list(tmp_path.iterdir()) == []

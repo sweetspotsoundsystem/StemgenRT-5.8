@@ -42,7 +42,9 @@ Dataset credits: Z. Rafii et al., [MUSDB18-HQ](https://zenodo.org/records/333837
 Code is MIT; weights have [separate terms and unresolved third-party rights
 questions](WEIGHTS-LICENSE.md). Dataset audio is not redistributed here.
 Legacy v0.6.x baselines additionally used third-party audio with incompletely
-documented provenance. They have a distinct rights-review requirement.
+documented provenance. Their plugin release attachments and model download link
+have been withdrawn pending rights review. Historical baseline results and local
+compatibility metadata remain; this does not erase copies in Git/LFS history.
 
 ## Frozen quality results
 
