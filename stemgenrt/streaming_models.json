@@ -79,7 +79,6 @@
   },
   "v0.6.2": {
     "filename": "hop128-v0.6.2.onnx",
-    "url": "https://media.githubusercontent.com/media/sweetspotsoundsystem/stemgen-rt/61df8f4aa1555ef110308d01ea92b54ace770979/model/model.onnx",
     "sha256": "77164d6a581fafb2a31f53fd8ffde44c07cf618472952a4cdba14e68dda3b8b9",
     "bytes": 37529132,
     "states": {
@@ -126,6 +125,6 @@
         500
       ]
     },
-    "status": "legacy research baseline; additional training provenance and distribution rights require review"
+    "status": "downloads withdrawn pending provenance and rights review; metadata retained for existing local copies and historical baseline identification"
   }
 }

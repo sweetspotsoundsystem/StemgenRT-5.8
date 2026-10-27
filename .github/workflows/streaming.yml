@@ -35,7 +35,6 @@ jobs:
       - name: Download and authenticate the released model
         run: |
           python scripts/download_streaming_model.py
-          python scripts/download_streaming_model.py --release v0.6.2
       - name: Check independent waveform parity and streaming lifecycle
         run: python -m pytest tests/test_streaming.py tests/test_download_streaming_model.py -q
 
@@ -64,7 +63,6 @@ jobs:
       - name: Download the current release
         run: |
           python scripts/download_streaming_model.py
-          python scripts/download_streaming_model.py --release v0.6.2
       - name: Check model, losses, data, recovery, export and evaluation
         run: python -m pytest -q
       - name: Build distributions and reject archived code

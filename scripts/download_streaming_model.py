@@ -24,6 +24,11 @@ def digest(path):
 def download(destination, *, release="current"):
     """Publish verified bytes, preserving any existing destination."""
     model = MODELS[release]
+    if not model.get("url"):
+        raise ValueError(
+            f"{release} downloads have been withdrawn pending provenance and rights review. "
+            "Only local compatibility metadata is retained; use --release current for the current model."
+        )
     destination = Path(destination)
     if destination.is_symlink():
         raise FileExistsError(f"Refusing a symlink destination: {destination}")
@@ -66,7 +71,11 @@ def main():
     args = parser.parse_args()
     destination = args.output or (Path(__file__).resolve().parents[1]
                                   / "models" / MODELS[args.release]["filename"])
-    print(f"Model ready: {download(destination, release=args.release)}")
+    try:
+        result = download(destination, release=args.release)
+    except ValueError as error:
+        parser.error(str(error))
+    print(f"Model ready: {result}")
 
 
 if __name__ == "__main__":

@@ -22,7 +22,8 @@ class StreamingSeparator:
     """Separate float32 audio at 44.1 kHz, preserving every recurrent state.
 
     The current model has thirteen independent Drums/Bass/Vocals states.
-    The v0.6.2 eight-state model remains supported with its explicit checksum.
+    Existing local v0.6.2 eight-state copies remain supported with their explicit
+    checksum; legacy downloads have been withdrawn pending rights review.
     Custom exports require an explicit checksum and one of these exact ABIs.
 
     ``process_chunk`` accepts [2, 128] and returns [4, 2, 128], aligned to

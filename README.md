@@ -58,8 +58,9 @@ EMA history or data-cursor state needed to resume training.
 ## Compatibility and limitations
 
 The plug-in remains named **StemgenRT** and retains its existing host identity.
-Version 0.7.0 replaces its previous joint model. Legacy v0.6.x artifacts have unresolved additional training-provenance questions;
-see the [weights notice](WEIGHTS-LICENSE.md) before using those baselines.
+Version 0.7.0 replaces its previous joint model. Legacy v0.6.x plugin release
+attachments and the model downloader's v0.6.2 link have been withdrawn pending
+provenance and rights review; see the [weights notice](WEIGHTS-LICENSE.md).
 `StemgenRT58` remains the legacy eight-state native class; use `IndependentStems`
 with `BandSeparator` and `SpecialistSeparator` for the new architecture.
 

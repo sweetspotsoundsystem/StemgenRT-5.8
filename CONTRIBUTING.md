@@ -34,6 +34,11 @@ ONNX export, and waveform agreement with independent PyTorch fixtures. Update
 the relevant tests when changing these behaviors. A passing CPU suite does not
 measure separation quality or real-time plugin performance.
 
+The exact v0.6.2 waveform parity test runs only when an existing local copy is
+present at `models/hop128-v0.6.2.onnx`; otherwise it reports a skip. Legacy weights
+have been withdrawn from the downloader and are not fetched by CI. The legacy
+model, training, recovery and export tests still run using initialized parameters.
+
 Keep checkpoints, datasets, generated model files and local experiment records
 out of source distributions. For a released model update, update the immutable
 download URL, checksum and matching waveform fixtures together.

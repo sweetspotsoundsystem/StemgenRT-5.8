@@ -15,8 +15,10 @@ The graph uses the final 40,000-update parameter EMA from each source model.
 Model hashes and complete deployment metadata are distributed with the plug-in.
 
 The download script and `StreamingSeparator` select the new default as documented in
-[the model interface](../models/README.md). The downloader's `--release v0.6.2`
-option and an explicit checksum retain access to the previous graph.
+[the model interface](../models/README.md). Downloads of the previous v0.6.2 graph
+have been withdrawn pending provenance and rights review. Its checksum and state
+contract remain for identifying existing local copies and the historical baseline;
+the downloader refuses `--release v0.6.2`. See the [weights notice](../WEIGHTS-LICENSE.md).
 `StemgenRT58`, its training/recovery support and integer exporter remain
 available for existing native checkpoints. They do not construct the new model.
 

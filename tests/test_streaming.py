@@ -124,8 +124,10 @@ def test_rejects_incomplete_or_changed_state_interface(separator, monkeypatch, c
 def test_retained_v062_all_four_stem_parity_and_reset():
     models = json.loads((ROOT / "stemgenrt/streaming_models.json").read_text())
     legacy = models["v0.6.2"]
-    separator = StreamingSeparator(ROOT / "models" / legacy["filename"],
-                                   expected_sha256=legacy["sha256"])
+    path = ROOT / "models" / legacy["filename"]
+    if not path.is_file():
+        pytest.skip("Legacy weights withdrawn; exact parity requires an existing local copy")
+    separator = StreamingSeparator(path, expected_sha256=legacy["sha256"])
     for audio, expected in references("hop128-pytorch", legacy["sha256"]):
         output = separator.separate(audio)
         np.testing.assert_allclose(output, expected, rtol=0, atol=1e-5)
