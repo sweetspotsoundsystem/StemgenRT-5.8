@@ -46,6 +46,7 @@ class StreamingSeparator:
 
         import onnxruntime as ort
 
+        ort.disable_telemetry_events()
         options = ort.SessionOptions()
         options.intra_op_num_threads = 1
         options.inter_op_num_threads = 1

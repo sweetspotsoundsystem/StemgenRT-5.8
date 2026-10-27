@@ -10,10 +10,11 @@ the model weights and immutable download identity remain unchanged. Exact graph
 partitions support the plugin's three-worker deployment.
 
 Stereo 44.1 kHz audio is processed in 128-sample hops with 13 persistent states.
-The graph delays audio by 128 samples. The plug-in's worker reserve adds 128
-samples with a 128-sample host buffer: **256 samples, or 5.805 ms**, excluding
-hardware latency. Larger host buffers require additional reported reserve.
-The repository's 5.8 suffix describes this latency setting, not a version number.
+The model's synthesis-frame algorithmic latency is **256 samples / 5.805 ms**.
+Its graph alignment is 128 samples. Separately, the plug-in's worker reserve adds
+128 samples at a 128-sample host buffer, reporting **256 samples / 5.805 ms PDC**.
+The asynchronous plugin is 384 samples / 8.707 ms under the synthesis-frame
+convention. These figures exclude device I/O; see the [model card](MODEL_CARD.md).
 
 ## Inference
 
@@ -50,15 +51,15 @@ three authenticated checkpoints without sharing weights or redistributing
 errors into the learned stems.
 
 See [training and recovery](docs/training.md) and
-[architecture and export](docs/independent-stems.md). Datasets and native training
-checkpoints are supplied separately; the ONNX file does not contain optimizer,
+[architecture and export](docs/independent-stems.md). Acquire datasets separately under their own terms. Native training
+checkpoints are not currently distributed; the ONNX file does not contain optimizer,
 EMA history or data-cursor state needed to resume training.
 
 ## Compatibility and limitations
 
 The plug-in remains named **StemgenRT** and retains its existing host identity.
-Version 0.7.0 replaces its previous joint model. Existing v0.6.2 Python inference
-is available with `--release v0.6.2` and that model's explicit checksum.
+Version 0.7.0 replaces its previous joint model. Legacy v0.6.x artifacts have unresolved additional training-provenance questions;
+see the [weights notice](WEIGHTS-LICENSE.md) before using those baselines.
 `StemgenRT58` remains the legacy eight-state native class; use `IndependentStems`
 with `BandSeparator` and `SpecialistSeparator` for the new architecture.
 
@@ -75,3 +76,12 @@ figure is not a CPU deadline guarantee.
 
 This is a divergent fork of [Phil Wang's HS-TasNet implementation](https://github.com/lucidrains/HS-TasNet),
 with a different model and Python API. See [provenance and migration](docs/provenance.md).
+
+## Results, credit and licences
+
+See the [model card and frozen results](MODEL_CARD.md),
+[full-song benchmark and preparation tools](docs/benchmark.md), and
+[CITATION.cff](CITATION.cff). The manuscript remains unpublished.
+Code is MIT; [model weights have separate terms](WEIGHTS-LICENSE.md).
+Phil Wang is credited for the upstream HS-TasNet implementation; the original
+copyright notice remains in LICENSE.
