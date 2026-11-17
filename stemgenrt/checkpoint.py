@@ -395,6 +395,13 @@ def _atomic_save(path, payload):
 def _validate_training_provenance(config, provenance):
     from .data import validate_checkpoint as validate_data_checkpoint
     validate_data_checkpoint(config, provenance)
+    if ("residual_other_weight" in config or "residual_peer_sha256" in config
+            or "current_stage_residual_other" in provenance):
+        from ._losses.residual_other import specification
+        weight = config.get("residual_other_weight", 0.)
+        _require(weight and config.get("model_family") == "specialist" and config.get("target_source") == "bass"
+                 and provenance.get("current_stage_residual_other") == specification(weight, config.get("residual_peer_sha256")),
+                 "Residual Other checkpoint recipe differs from its training provenance")
     if ("teacher_coefficient" in config or "teacher_supervision" in config
             or "branch_memory_current_stage_teacher_supervision" in provenance
             or provenance.get("branch_memory_online_teacher_used")
