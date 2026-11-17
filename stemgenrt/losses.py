@@ -383,7 +383,7 @@ def _auxiliary_weight(value):
 
 
 def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None,
-           auxiliary_target_source=None, auxiliary_weight=AUXILIARY_WEIGHT):
+           auxiliary_target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other_weight=0.):
     source_index(target_source)
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
@@ -424,18 +424,27 @@ def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., targ
             version="configurable-auxiliary-grouped-update-v1",
             loss="Unchanged ordinary objective plus weighted joint source views with multipliers [1,.25]",
             production_recipe_selected=False)
+    if residual_other_weight:
+        result.update(version="bass-residual-other-v1", residual_other_weight=residual_other_weight,
+                      loss="Bass objective plus ordinary residual Other MSE normalized by scored mixture power",
+                      frozen_peer_roles=["drums EMA", "vocals EMA"], production_recipe_selected=False)
     return result
 
 
 def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_samples,
                      check_continue=None, verify_input_gradients=False, progress=None,
                      extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None,
-                     target_source=None, auxiliary_weight=AUXILIARY_WEIGHT):
+                     target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None):
     from .model import render_scored_context
 
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
     auxiliary_weight = _auxiliary_weight(auxiliary_weight)
+    if residual_other is not None:
+        _require(group == "ordinary" and target_source == "bass"
+                 and tuple(model.architecture_metadata["source_order"]) == ("bass",),
+                 "Residual Other supervision requires the ordinary single-output Bass group")
+        other_reference = targets[:, SOURCE_NAMES.index("other"), :, warmup_samples:]
     targets, loss_target_source = model_targets(model, targets, target_source)
     if targets.shape[1] == 1 and teacher:
         raise ValueError("Single-output experiment has no online teacher")
@@ -474,6 +483,14 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
                           target_source=loss_target_source, **ordinary_options)
     value = terms.total if group == "ordinary" else auxiliary_weight * terms.total
     details = {}
+    if residual_other is not None:
+        other_term = residual_other(deployed[:, 0], mixture, other_reference,
+                                    warmup_samples=warmup_samples, microbatch=microbatch)
+        value = value + residual_other.weight * other_term
+        if not bool(torch.isfinite(value)):
+            raise FloatingPointError("Nonfinite residual Other objective")
+        details.update(residual_other_weight=residual_other.weight,
+                       residual_other_loss_unweighted=float(other_term.detach()))
     if teacher:
         from ._losses.teacher import contribution as teacher_contribution
         reference = targets[..., warmup_samples:]
@@ -542,7 +559,7 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
                       auxiliary_microbatch=2, check_continue=None, after_group=None,
                       verify_input_gradients=False, progress=None, extra_ordinary_primary_sdr_weight=0.,
                       teacher_coefficient=0., teacher_targets=None, target_source=None,
-                      auxiliary_weight=AUXILIARY_WEIGHT):
+                      auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None):
     teacher = _teacher_weight(teacher_coefficient)
     single_source = tuple(model.architecture_metadata["source_order"]) == (target_source,)
     auxiliary_mix, auxiliary_targets = source_views(mixture_cpu, targets_cpu,
@@ -560,7 +577,7 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
             extra_ordinary_primary_sdr_weight=extra_ordinary_primary_sdr_weight,
             teacher_coefficient=teacher if group == "ordinary" else 0.,
             teacher_targets=teacher_targets if group == "ordinary" else None, target_source=target_source,
-            auxiliary_weight=auxiliary_weight)
+            auxiliary_weight=auxiliary_weight, residual_other=residual_other if group == "ordinary" else None)
         reduction = getattr(groups, group)
         _require(row["active_windows"] == reduction.active.cpu().tolist()
                 and row["absent_windows"] == reduction.absent.cpu().tolist(), "Canonical group activity differs")
@@ -574,7 +591,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, extra_ordinary_primary_sdr_weight=0.,
                    teacher_coefficient=0., teacher_targets=None, target_source=None,
-                      auxiliary_weight=AUXILIARY_WEIGHT):
+                   auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None):
     """Accumulate both independently normalized groups, then clip/update once.
 
     Optional callbacks run only before the final update, and may raise to stop
@@ -608,7 +625,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
         ordinary_microbatch=ordinary_microbatch, auxiliary_microbatch=auxiliary_microbatch,
         check_continue=check_continue, after_group=after_group, extra_ordinary_primary_sdr_weight=extra,
         teacher_coefficient=teacher, teacher_targets=teacher_targets, target_source=target_source,
-        auxiliary_weight=auxiliary_weight)
+        auxiliary_weight=auxiliary_weight, residual_other=residual_other)
     gradient_norms = {}
     for name, parameter in model.named_parameters():
         _require(parameter.grad is not None and bool(torch.isfinite(parameter.grad).all()),
@@ -629,7 +646,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                        and tuple(model.architecture_metadata["source_order"]) == (target_source,) else None)
     return {"step": step, "accumulation_policy": policy(extra_ordinary_primary_sdr_weight=extra,
             teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source,
-            auxiliary_weight=auxiliary_weight),
+            auxiliary_weight=auxiliary_weight, residual_other_weight=residual_other.weight if residual_other else 0.),
             "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
             "gradient_norm_before_clip": float(norm), "parameter_gradient_norms": gradient_norms, **endpoint}
 
@@ -638,7 +655,7 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, share_gru_weights=True,
                    extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None,
-                   target_source=None, auxiliary_weight=AUXILIARY_WEIGHT):
+                   target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None):
     """Complete both loss groups, then clip, advance Adam and update EMA once.
 
     CUDA BF16 replay shares exactly equal saved GRU transposes by default.
@@ -661,4 +678,4 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
             auxiliary_microbatch=auxiliary_microbatch, check_continue=check_continue,
             after_group=after_group, extra_ordinary_primary_sdr_weight=extra_ordinary_primary_sdr_weight,
             teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets, target_source=target_source,
-            auxiliary_weight=auxiliary_weight)
+            auxiliary_weight=auxiliary_weight, residual_other=residual_other)

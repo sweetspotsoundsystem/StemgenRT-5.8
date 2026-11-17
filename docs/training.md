@@ -222,6 +222,45 @@ pass `--drums-updates 8000 --drums-parent-updates 40000` to
 `scripts/export_independent_model.py`, keeping `--expected-updates 40000` for the
 fixed stems. Export validates each stem's ancestry and interface independently.
 
+## Bass continuation with residual Other supervision
+
+`configs/bass-residual-other-finetune.json` starts an 8,000-update stage from
+the released Bass EMA. Use the release Drums and Vocals EMA checkpoints as fixed
+training inputs. The configuration authenticates their SHA-256 digests. Supply
+their paths on both fresh and resumed invocations.
+
+```sh
+python train_streaming.py --config configs/bass-residual-other-finetune.json \
+  --manifest data/train.json --validation-manifest data/valid.json \
+  --checkpoint /path/to/bass.pt --sha256 a75137f77e4c9be4868fc6fe3320cf784410519ff6bf4baeb281342eb99524c7 \
+  --drums-checkpoint /path/to/drums.pt --vocals-checkpoint /path/to/vocals.pt \
+  --output runs/bass-residual-other
+```
+
+The ordinary loss includes the error of the physical residual against the
+recorded, augmented Other reference. Each frozen peer processes the same
+remixed crop as Bass, with its full warmup, carried state and aligned synthesis
+flush. Compute Other as `mixture - ((drums + bass) + vocals)`. For each crop,
+divide the mean squared stereo Other error by the scored mixture's mean square,
+floored at `1e-6`. Average the 16 crop losses, multiply by
+`7.2794127729967615`, and add to the ordinary Bass loss before grouped gradient
+replay. Only Bass takes an optimizer step. The existing source-absent and
+source-only views use their original objective.
+
+The coefficient is 0.2 times the median ratio of the ordinary Bass parameter
+gradient norm to the unweighted Other gradient norm at initialization. The
+calibration used eight complete training groups with start addresses
+`7993856 + 272*i` for `i=0..7`, the control augmentation, and zero optimizer
+updates. The matched control is `configs/bass-control-finetune.json`.
+Both use the continuation addresses 8,640,000 through 8,767,999.
+
+Score the final EMA on the 14-track development panel with released Drums and
+Vocals. Require at least +0.10 dB over the release for Bass, 20–250 Hz Bass,
+and Other, positive paired Bass and Other medians, and higher Other than the
+matched continuation. Apply the Bass SIR, source-absent leakage and solo Bass
+preservation checks. The standard combined exporter accepts the final Bass
+checkpoint with `--bass-updates 8000 --bass-parent-updates 40000`.
+
 ## Released inventory and reconstruction limits
 
 The [model card](../MODEL_CARD.md) identifies the three missing MUSDB songs,
