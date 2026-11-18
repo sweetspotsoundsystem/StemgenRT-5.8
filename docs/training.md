@@ -261,6 +261,43 @@ matched continuation. Apply the Bass SIR, source-absent leakage and solo Bass
 preservation checks. The standard combined exporter accepts the final Bass
 checkpoint with `--bass-updates 8000 --bass-parent-updates 40000`.
 
+## Bass continuation with release-relative leakage and preservation penalties
+
+`configs/bass-release-margin-finetune.json` adds one term to the residual
+Other recipe. The released Bass EMA provides a reference output on the same
+augmented input, including warmup and synthesis alignment. Supply its path
+on both fresh and resumed runs. The example starts fresh Adam and EMA from
+the released Bass weights.
+
+```sh
+python train_streaming.py --config configs/bass-release-margin-finetune.json \
+  --manifest data/train.json --validation-manifest data/valid.json \
+  --checkpoint /path/to/bass.pt --sha256 a75137f77e4c9be4868fc6fe3320cf784410519ff6bf4baeb281342eb99524c7 --role ema \
+  --drums-checkpoint /path/to/drums.pt --vocals-checkpoint /path/to/vocals.pt \
+  --bass-release-checkpoint /path/to/bass.pt --output /path/to/new-run
+```
+
+| Condition during training | Per-window degradation relative to the released Bass EMA | Tolerance |
+|---|---|---:|
+| Ordinary mix, Bass reference at or below −50 dBFS | Rise in Bass output dBFS | 0.50 dB |
+| Bass removed, input above −50 dBFS | Rise in Bass output/input dB | 0.50 dB |
+| Bass alone, reference above −50 dBFS | Loss of scale-dependent Bass SDR | 0.10 dB |
+
+For each condition, average the positive excess above tolerance over all
+eligible one-second stereo windows. An empty condition contributes zero.
+The three means receive equal weight. The coefficient of their average is
+`0.003270580966293747`. It was set on eight preselected training groups by
+measuring gradients at the completed residual-Other EMA. The weight is 0.20
+times the median ratio of the full existing objective's gradient norm to the
+unit-weight penalty's gradient norm. All eight groups had a nonzero penalty
+gradient. Only the student Bass model receives updates.
+
+The matched comparison uses the same 8,000 updates and addressed crops as
+`configs/bass-residual-other-finetune.json`. Each checkpoint authenticates the
+frozen Bass reference and loss specification. The final EMA is evaluated on
+ordinary mixes, Bass-removed inputs and isolated Bass with the original
+development criteria. The frozen reference runs only during training.
+
 ## Released inventory and reconstruction limits
 
 The [model card](../MODEL_CARD.md) identifies the three missing MUSDB songs,

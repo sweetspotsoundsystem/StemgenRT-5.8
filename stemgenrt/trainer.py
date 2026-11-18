@@ -68,6 +68,8 @@ class TrainingConfig:
     residual_peer_sha256: dict[str, str] | None = None
     teacher_coefficient: float = 0.
     teacher_checkpoint: str | None = None
+    release_margin_weight: float = 0.
+    bass_release_sha256: str | None = None
 
     def validate(self):
         source_index(self.target_source)
@@ -116,6 +118,10 @@ class TrainingConfig:
         validate_recipe(self.residual_other_weight, self.residual_peer_sha256)
         if self.residual_other_weight and (self.model_family != "specialist" or self.target_source != "bass"):
             raise ValueError("Residual Other supervision requires a Bass specialist")
+        from ._losses.release_margin import validate_recipe as validate_margin
+        validate_margin(self.release_margin_weight, self.bass_release_sha256)
+        if self.release_margin_weight and (self.model_family != "specialist" or self.target_source != "bass"):
+            raise ValueError("Release margin supervision requires a Bass specialist")
         if self.teacher_coefficient and (not self.teacher_checkpoint
                 or self.extra_ordinary_primary_sdr_weight != .2):
             raise ValueError("Teacher training requires its checkpoint and extra_ordinary_primary_sdr_weight=0.2")
@@ -197,7 +203,8 @@ def _json(path, value):
 
 def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None,
           role="ema", stop_after=None, validation_manifest=None,
-          replay_journal=None, replay_sha256=None, drums_checkpoint=None, vocals_checkpoint=None):
+          replay_journal=None, replay_sha256=None, drums_checkpoint=None, vocals_checkpoint=None,
+          bass_release_checkpoint=None):
     """Start or exactly resume a finite run into a new output directory.
 
     Initializing from a checkpoint starts fresh Adam/EMA; --resume restores all
@@ -208,6 +215,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     peer_paths = (drums_checkpoint, vocals_checkpoint)
     if any((path is not None) != bool(config.residual_other_weight) for path in peer_paths):
         raise ValueError("Supply both peer checkpoints exactly when residual Other supervision is enabled")
+    if (bass_release_checkpoint is not None) != bool(config.release_margin_weight):
+        raise ValueError("Supply the reference Bass checkpoint exactly when release margin supervision is enabled")
     if checkpoint is not None and resume is not None:
         raise ValueError("Choose one checkpoint initialization or exact resume")
     if (checkpoint is not None or resume is not None) and sha256 is None:
@@ -232,6 +241,9 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
             specialist_waveform_basis=(0 if config.target_source == "bass" else 256)
                 if config.specialist_waveform_basis is None else config.specialist_waveform_basis).validate()
     config_dict = asdict(config)
+    if not config.release_margin_weight:
+        config_dict.pop("release_margin_weight")
+        config_dict.pop("bass_release_sha256")
     if not config.residual_other_weight:
         config_dict.pop("residual_other_weight")
         config_dict.pop("residual_peer_sha256")
@@ -286,6 +298,11 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         residual_other = ResidualOtherLoss(config.residual_other_weight, config.residual_peer_sha256,
                                            drums_checkpoint=drums_checkpoint, vocals_checkpoint=vocals_checkpoint,
                                            device=device)
+    release_margin = None
+    if config.release_margin_weight:
+        from ._losses.release_margin import BassReleaseMargin
+        release_margin = BassReleaseMargin(config.release_margin_weight, config.bass_release_sha256,
+                                           checkpoint=bass_release_checkpoint, device=device)
     step = 0
     if resume is not None:
         restored = load_training_checkpoint(resume, sha256=sha256, config=config_dict,
@@ -339,6 +356,10 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
             model.provenance["current_stage_residual_other"] = residual_other.specification
         else:
             model.provenance.pop("current_stage_residual_other", None)
+        if release_margin is not None:
+            model.provenance["current_stage_bass_release_margin"] = release_margin.specification
+        else:
+            model.provenance.pop("current_stage_bass_release_margin", None)
         if teacher_provider is not None or getattr(model, "provenance", {}).get("branch_memory_current_stage_teacher_supervision"):
             from .teacher import attach
             attach(model, teacher_provider.specification if teacher_provider is not None else None)
@@ -410,7 +431,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     auxiliary_microbatch=config.auxiliary_microbatch_size,
                     extra_ordinary_primary_sdr_weight=config.extra_ordinary_primary_sdr_weight,
                     auxiliary_weight=config.auxiliary_weight,
-                    target_source=config.target_source, residual_other=residual_other, **teacher_options)
+                    target_source=config.target_source, residual_other=residual_other,
+                    release_margin=release_margin, **teacher_options)
                 del teacher_options
                 step += 1
                 if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
@@ -467,13 +489,15 @@ def main():
     parser.add_argument("--replay-sha256", help="Expected digest of the complete original journal file")
     parser.add_argument("--drums-checkpoint", type=Path, help="Frozen Drums EMA for residual Other training")
     parser.add_argument("--vocals-checkpoint", type=Path, help="Frozen Vocals EMA for residual Other training")
+    parser.add_argument("--bass-release-checkpoint", type=Path, help="Frozen Bass EMA for release margin training")
     args = parser.parse_args()
     torch.set_num_threads(1)
     result = train(TrainingConfig(**json.loads(args.config.read_text())), args.manifest, args.output,
         checkpoint=args.checkpoint, resume=args.resume, sha256=args.sha256, role=args.role,
         stop_after=args.stop_after, validation_manifest=args.validation_manifest,
         replay_journal=args.replay_journal, replay_sha256=args.replay_sha256,
-        drums_checkpoint=args.drums_checkpoint, vocals_checkpoint=args.vocals_checkpoint)
+        drums_checkpoint=args.drums_checkpoint, vocals_checkpoint=args.vocals_checkpoint,
+        bass_release_checkpoint=args.bass_release_checkpoint)
     print(json.dumps(result, allow_nan=False))
 
 
