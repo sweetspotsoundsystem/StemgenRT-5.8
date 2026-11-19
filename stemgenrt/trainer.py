@@ -70,6 +70,7 @@ class TrainingConfig:
     teacher_checkpoint: str | None = None
     release_margin_weight: float = 0.
     bass_release_sha256: str | None = None
+    release_margin_solo_multiplier: float = 1.
 
     def validate(self):
         source_index(self.target_source)
@@ -119,7 +120,7 @@ class TrainingConfig:
         if self.residual_other_weight and (self.model_family != "specialist" or self.target_source != "bass"):
             raise ValueError("Residual Other supervision requires a Bass specialist")
         from ._losses.release_margin import validate_recipe as validate_margin
-        validate_margin(self.release_margin_weight, self.bass_release_sha256)
+        validate_margin(self.release_margin_weight, self.bass_release_sha256, solo_multiplier=self.release_margin_solo_multiplier)
         if self.release_margin_weight and (self.model_family != "specialist" or self.target_source != "bass"):
             raise ValueError("Release margin supervision requires a Bass specialist")
         if self.teacher_coefficient and (not self.teacher_checkpoint
@@ -241,6 +242,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
             specialist_waveform_basis=(0 if config.target_source == "bass" else 256)
                 if config.specialist_waveform_basis is None else config.specialist_waveform_basis).validate()
     config_dict = asdict(config)
+    if config.release_margin_solo_multiplier == 1.:
+        config_dict.pop("release_margin_solo_multiplier")
     if not config.release_margin_weight:
         config_dict.pop("release_margin_weight")
         config_dict.pop("bass_release_sha256")
@@ -302,7 +305,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     if config.release_margin_weight:
         from ._losses.release_margin import BassReleaseMargin
         release_margin = BassReleaseMargin(config.release_margin_weight, config.bass_release_sha256,
-                                           checkpoint=bass_release_checkpoint, device=device)
+                                           checkpoint=bass_release_checkpoint, device=device,
+                                           solo_multiplier=config.release_margin_solo_multiplier)
     step = 0
     if resume is not None:
         restored = load_training_checkpoint(resume, sha256=sha256, config=config_dict,
