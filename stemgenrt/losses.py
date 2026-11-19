@@ -384,7 +384,7 @@ def _auxiliary_weight(value):
 
 def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None,
            auxiliary_target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other_weight=0.,
-           release_margin_weight=0.):
+           release_margin_weight=0., release_margin_solo_multiplier=1.):
     source_index(target_source)
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
@@ -429,11 +429,16 @@ def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., targ
         result.update(version="bass-residual-other-v1", residual_other_weight=residual_other_weight,
                       loss="Bass objective plus ordinary residual Other MSE normalized by scored mixture power",
                       frozen_peer_roles=["drums EMA", "vocals EMA"], production_recipe_selected=False)
-    if release_margin_weight:
-        from ._losses.release_margin import VERSION as margin_version
+    if release_margin_weight or release_margin_solo_multiplier != 1. or type(release_margin_solo_multiplier) is bool:
+        from ._losses.release_margin import SOLO_VERSION, VERSION as margin_version, validate_solo_multiplier
+        multiplier = validate_solo_multiplier(release_margin_solo_multiplier)
+        if not release_margin_weight:
+            raise ValueError("A solo multiplier requires an enabled Bass release margin")
         result.update(version=margin_version, release_margin_weight=release_margin_weight,
                       loss=result["loss"] + " plus release-relative Bass leakage and solo SDR excess",
                       production_recipe_selected=False)
+        if multiplier != 1.:
+            result.update(version=SOLO_VERSION, release_margin_solo_multiplier=multiplier)
     return result
 
 
@@ -665,7 +670,8 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     return {"step": step, "accumulation_policy": policy(extra_ordinary_primary_sdr_weight=extra,
             teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source,
             auxiliary_weight=auxiliary_weight, residual_other_weight=residual_other.weight if residual_other else 0.,
-            release_margin_weight=release_margin.weight if release_margin else 0.),
+            release_margin_weight=release_margin.weight if release_margin else 0.,
+            release_margin_solo_multiplier=getattr(release_margin, "solo_multiplier", 1.)),
             "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
             "gradient_norm_before_clip": float(norm), "parameter_gradient_norms": gradient_norms, **endpoint}
 

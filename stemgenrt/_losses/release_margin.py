@@ -12,9 +12,19 @@ from ..model import render_scored_context
 METRICS = MetricConfig()
 MARGINS_DB = {"ordinary_quiet": 0.5, "removed": 0.5, "solo": 0.1}
 VERSION = "bass-release-margin-v1"
+SOLO_VERSION = "bass-release-margin-solo-v1"
 
 
-def validate_recipe(weight, digest):
+def validate_solo_multiplier(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        raise ValueError("Bass solo margin multiplier must be finite and nonnegative")
+    return float(value)
+
+
+def validate_recipe(weight, digest, *, solo_multiplier=1.):
+    validate_solo_multiplier(solo_multiplier)
+    if not weight and solo_multiplier != 1.:
+        raise ValueError("A solo multiplier requires an enabled Bass release margin")
     if type(weight) not in (int, float) or not math.isfinite(weight) or weight < 0:
         raise ValueError("Bass release margin weight must be finite and nonnegative")
     if weight == 0 and digest is None:
@@ -23,13 +33,17 @@ def validate_recipe(weight, digest):
         raise ValueError("A positive Bass release margin weight requires a reference checkpoint SHA-256")
 
 
-def specification(weight, digest):
-    validate_recipe(weight, digest)
-    return {"version": VERSION, "weight": weight, "reference_sha256": digest, "role": "ema",
+def specification(weight, digest, *, solo_multiplier=1.):
+    validate_recipe(weight, digest, solo_multiplier=solo_multiplier)
+    result = {"version": VERSION, "weight": weight, "reference_sha256": digest, "role": "ema",
             "margins_db": dict(MARGINS_DB), "window_samples": METRICS.window_samples,
             "activity_dbfs": METRICS.activity_dbfs, "epsilon": METRICS.epsilon,
             "ratio_db_limits": [METRICS.db_floor, METRICS.db_ceiling],
             "reduction": "Mean excess over all eligible windows within each condition, with equal thirds"}
+    if solo_multiplier != 1.:
+        result.update(version=SOLO_VERSION, solo_multiplier=float(solo_multiplier),
+                      reduction="(ordinary quiet excess + removed excess + solo multiplier * solo excess) / 3")
+    return result
 
 
 def _energy(audio):
@@ -55,8 +69,9 @@ def _excess(degradation, eligible, name):
                      "mean_excess_db": float(average.detach())}
 
 
-def margin_loss(student, released, mixture, truth, *, group):
+def margin_loss(student, released, mixture, truth, *, group, solo_multiplier=1.):
     """Score aligned stereo suffixes; reductions include eligible windows within tolerance."""
+    validate_solo_multiplier(solo_multiplier)
     if (student.ndim != 3 or student.shape[1] != 2 or student.shape[-1] < METRICS.window_samples
             or student.dtype != torch.float32 or any(
                 t.shape != student.shape or t.device != student.device or t.dtype != student.dtype or t.requires_grad
@@ -81,6 +96,8 @@ def margin_loss(student, released, mixture, truth, *, group):
         released_sdr = _ratio(signal, _energy(released[1:] - solo_reference))
         student_sdr = _ratio(signal, _energy(student[1:] - solo_reference))
         solo, solo_row = _excess(released_sdr - student_sdr, _level(signal) > METRICS.activity_dbfs, "solo")
+        if solo_multiplier != 1.:
+            solo = solo * solo_multiplier
         value, rows = removed + solo, {"removed": removed_row, "solo": solo_row}
     else:
         raise ValueError("Bass release margins require ordinary inputs or the two ordered source views")
@@ -88,8 +105,9 @@ def margin_loss(student, released, mixture, truth, *, group):
 
 
 class BassReleaseMargin:
-    def __init__(self, weight, digest, *, checkpoint, device):
-        self.specification = specification(weight, digest)
+    def __init__(self, weight, digest, *, checkpoint, device, solo_multiplier=1.):
+        self.specification = specification(weight, digest, solo_multiplier=solo_multiplier)
+        self.solo_multiplier = float(solo_multiplier)
         if not weight or checkpoint is None:
             raise ValueError("Supply the frozen Bass release checkpoint for margin training")
         # Loading a separately frozen reference must preserve the student's initialization RNG.
@@ -105,4 +123,5 @@ class BassReleaseMargin:
             released = torch.cat([render_scored_context(self.model, part, warmup_samples=warmup_samples,
                                                         carry_state=True).deployed[:, 0]
                                   for part in mixture.split(microbatch)])
-        return margin_loss(student, released, mixture[..., warmup_samples:], truth, group=group)
+        return margin_loss(student, released, mixture[..., warmup_samples:], truth, group=group,
+                           solo_multiplier=self.solo_multiplier)

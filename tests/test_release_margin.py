@@ -132,3 +132,47 @@ def test_grouped_replay_adds_margin_once_outside_the_source_view_weight():
     assert trial["groups"]["auxiliary"]["view_contribution_multipliers"] == [1., .25]
     assert trial["ema_updates"] == base["ema_updates"] == 1
     assert state_sha256(model.state_dict()) != state_sha256(altered.state_dict())
+
+
+def test_solo_multiplier_changes_only_solo_gradient_and_keeps_original_denominator():
+    mixture = torch.full((2, 2, WINDOW), .25)
+    truth = mixture.clone()
+    truth[0].zero_()
+    release = truth - .01
+    trial = (truth - .025).requires_grad_()
+    base, rows = margin.margin_loss(trial, release, mixture, truth, group="auxiliary")
+    heavier, updated = margin.margin_loss(trial, release, mixture, truth, group="auxiliary", solo_multiplier=4.)
+    base_gradient, = torch.autograd.grad(base, trial)
+    heavy_gradient, = torch.autograd.grad(heavier, trial)
+    assert rows == updated and all(r["violating_windows"] for r in rows.values())
+    assert heavier.item() - base.item() == pytest.approx(rows["solo"]["mean_excess_db"], abs=2e-6)
+    assert torch.equal(base_gradient[0], heavy_gradient[0])
+    assert torch.equal(4 * base_gradient[1], heavy_gradient[1])
+    assert torch.count_nonzero(base_gradient[0]) and torch.count_nonzero(base_gradient[1])
+    quiet, old_rows = margin.margin_loss(trial, release, mixture, truth, group="ordinary")
+    new_quiet, new_rows = margin.margin_loss(trial, release, mixture, truth, group="ordinary", solo_multiplier=4.)
+    assert torch.equal(quiet, new_quiet) and old_rows == new_rows
+    assert torch.equal(torch.autograd.grad(quiet, trial)[0], torch.autograd.grad(new_quiet, trial)[0])
+
+
+def test_weighted_solo_recipe_binds_recovery_and_preserves_legacy_metadata():
+    config = {"model_family":"specialist", "target_source":"bass", "release_margin_weight":.2, "bass_release_sha256":"a"*64}
+    old = margin.specification(.2, "a"*64)
+    assert old == margin.specification(.2, "a"*64, solo_multiplier=1.) and "solo_multiplier" not in old
+    new = margin.specification(.2, "a"*64, solo_multiplier=4.)
+    assert new["version"] == margin.SOLO_VERSION and new["solo_multiplier"] == 4.
+    provenance = {"current_stage_bass_release_margin":new}
+    _validate_training_provenance({**config, "release_margin_solo_multiplier":4.}, provenance)
+    with pytest.raises(ValueError, match="margin"):
+        _validate_training_provenance(config, provenance)
+    with pytest.raises(ValueError, match="margin"):
+        _validate_training_provenance({**config,"release_margin_solo_multiplier":4.}, {"current_stage_bass_release_margin":old})
+    policy = losses.policy(release_margin_weight=.2, release_margin_solo_multiplier=4.)
+    assert policy["version"] == margin.SOLO_VERSION and policy["release_margin_solo_multiplier"] == 4.
+    assert "release_margin_solo_multiplier" not in losses.policy(release_margin_weight=.2)
+    template = TrainingConfig(**config, precision="fp32")
+    for value in (-1., float("nan"), float("inf"), True):
+        with pytest.raises(ValueError, match="multiplier"):
+            replace(template, release_margin_solo_multiplier=value).validate()
+    with pytest.raises(ValueError, match="multiplier"):
+        replace(template, release_margin_solo_multiplier=4., release_margin_weight=0., bass_release_sha256=None).validate()

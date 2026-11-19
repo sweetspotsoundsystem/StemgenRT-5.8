@@ -346,3 +346,18 @@ within all five limits, selection maximizes the smallest gain in Bass, Other
 and low-Bass SDR. If every fraction exceeds a limit, the smallest worst excess
 relative to its tolerance takes priority. Exact ties favor the smaller fraction.
 Score only the selected setting on development.
+
+### Bass-only preservation weight
+
+`configs/bass-solo-margin-finetune.json` repeats the 8,000-update
+release-margin continuation with `release_margin_solo_multiplier` set to 4.
+Run the same training entry point with the same Bass release and fixed Drums
+and Vocals checkpoints used by `configs/bass-release-margin-finetune.json`.
+Each condition averages its excess over all its eligible one-second windows.
+The objective sums the ordinary quiet excess, the Bass-removed excess and
+four times the Bass-only SDR excess, then divides by three and applies
+`release_margin_weight`. This preserves the absolute coefficients on both
+leakage terms. A multiplier of one reproduces the original recipe.
+The optimizer journal records the multiplier and each condition's unweighted
+mean excess. Training snapshots bind the multiplier to the objective for
+recovery and EMA evaluation.

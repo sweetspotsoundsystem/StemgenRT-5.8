@@ -395,12 +395,13 @@ def _atomic_save(path, payload):
 def _validate_training_provenance(config, provenance):
     from .data import validate_checkpoint as validate_data_checkpoint
     validate_data_checkpoint(config, provenance)
-    if ("release_margin_weight" in config or "bass_release_sha256" in config
+    if ("release_margin_weight" in config or "bass_release_sha256" in config or "release_margin_solo_multiplier" in config
             or "current_stage_bass_release_margin" in provenance):
         from ._losses.release_margin import specification
         weight = config.get("release_margin_weight", 0.)
         _require(weight and config.get("model_family") == "specialist" and config.get("target_source") == "bass"
-                 and provenance.get("current_stage_bass_release_margin") == specification(weight, config.get("bass_release_sha256")),
+                 and provenance.get("current_stage_bass_release_margin") == specification(
+                     weight, config.get("bass_release_sha256"), solo_multiplier=config.get("release_margin_solo_multiplier", 1.)),
                  "Bass release margin checkpoint recipe differs from its training provenance")
     if ("residual_other_weight" in config or "residual_peer_sha256" in config
             or "current_stage_residual_other" in provenance):
