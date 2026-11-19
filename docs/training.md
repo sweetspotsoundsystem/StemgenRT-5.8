@@ -307,3 +307,42 @@ MoisesDB, the duplicate exclusion, and the separate baseline lineage. The
 converter](benchmark.md) is new code with an explicit conversion policy; the
 historical raw conversion script is not available, so it is not a claim of
 byte-identical data reproduction. Native training checkpoints are not distributed.
+
+### Interpolating a Bass continuation with its parent
+
+The released Bass specialist is the 40,000-update EMA. The
+`configs/bass-release-margin-finetune.json` recipe initializes from that EMA
+and trains for another 8,000 updates with fixed Drums and Vocals. Keep both
+authenticated checkpoints to reproduce an interpolation of their Bass parameters.
+The continuation checkpoint also contains its matching raw, Adam, EMA and RNG
+recovery state.
+
+With the ordinary independent export arguments, use the continuation for
+`--bass-checkpoint` and `--bass-sha256`. Set `--expected-updates 40000`,
+`--bass-updates 8000` and `--bass-parent-updates 40000`. Add
+`--bass-blend-parent` with the release checkpoint path,
+`--bass-blend-parent-sha256` with its digest and `--bass-trained-fraction` with
+the selected fraction between 0 and 1. Zero reproduces the parent and one
+reproduces the continuation. The exporter checks the continuation's
+initialization fingerprint, interpolates each learned tensor in FP64 on CPU,
+and rounds once to FP32. Both endpoints must have identical fixed buffers.
+
+The graph runs a single Bass model. Its manifest records both source
+checkpoints, the fraction and the reconstructed state fingerprint. The
+interpolation performs zero further optimizer updates. Drums, Vocals and the
+physical residual calculation use the same training and deployment definitions
+as the source endpoints.
+
+For training-only calibration, pass the training tracks, the released combined
+model and a mapping of fractions to authenticated Bass models to
+`stemgenrt.bass_interpolation_eval.score_bass_interpolation_track`. Include
+the released model at fraction zero. The scorer streams each track from its
+origin on the ordinary mix, isolated Bass and the mix with Bass removed.
+Aggregate each fraction's tracks with `summarize_bass_tracks` and select
+with `select_bass_fraction`. In this experiment the candidates are 0.125,
+0.25, 0.5 and 0.75. SIR, solo projection level and solo SDR tolerate a loss
+of 0.10 dB. Both leakage measures tolerate a rise of 0.50 dB. Among fractions
+within all five limits, selection maximizes the smallest gain in Bass, Other
+and low-Bass SDR. If every fraction exceeds a limit, the smallest worst excess
+relative to its tolerance takes priority. Exact ties favor the smaller fraction.
+Score only the selected setting on development.
