@@ -229,6 +229,8 @@ def test_resume_uses_restored_objects_cursor_identities_and_rng(harness, monkeyp
     expected_config.pop("auxiliary_weight")
     expected_config.pop("residual_other_weight")
     expected_config.pop("residual_peer_sha256")
+    expected_config.pop("release_margin_weight")
+    expected_config.pop("bass_release_sha256")
     expected_config.pop("track_sampling")
     before_python, before_numpy, before_torch = random.getstate(), np.random.get_state(), torch.get_rng_state()
     generator = torch.Generator().manual_seed(173)
