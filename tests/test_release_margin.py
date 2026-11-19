@@ -176,3 +176,19 @@ def test_weighted_solo_recipe_binds_recovery_and_preserves_legacy_metadata():
             replace(template, release_margin_solo_multiplier=value).validate()
     with pytest.raises(ValueError, match="multiplier"):
         replace(template, release_margin_solo_multiplier=4., release_margin_weight=0., bass_release_sha256=None).validate()
+
+
+def test_lower_rate_recipe_scales_every_update_of_the_matched_continuation():
+    import json
+    from pathlib import Path
+    from stemgenrt.trainer import learning_rate
+
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    base = TrainingConfig(**json.loads((configs/"bass-release-margin-finetune.json").read_text())).validate()
+    lower = TrainingConfig(**json.loads((configs/"bass-margin-low-lr-finetune.json").read_text())).validate()
+    assert lower == replace(base, lr=0.0001, min_lr=0.00001)
+    assert lower.steps == 8000 and lower.warmup == 100
+    for step in range(lower.steps):
+        assert math.isclose(learning_rate(step, lower), learning_rate(step, base)/3, rel_tol=1e-14)
+    assert learning_rate(lower.warmup-1, lower) == lower.lr
+    assert learning_rate(lower.steps-1, lower) == lower.min_lr

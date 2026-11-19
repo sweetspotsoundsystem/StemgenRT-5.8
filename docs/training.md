@@ -361,3 +361,15 @@ leakage terms. A multiplier of one reproduces the original recipe.
 The optimizer journal records the multiplier and each condition's unweighted
 mean excess. Training snapshots bind the multiplier to the objective for
 recovery and EMA evaluation.
+
+### Lower-rate Bass release-margin continuation
+
+`configs/bass-margin-low-lr-finetune.json` starts from the released
+40,000-update Bass EMA and uses the equal-weight Bass release-margin objective.
+Its 100-update warmup reaches a peak learning rate of 0.0001, followed by the
+same cosine decay to 0.00001 at update 8,000. Both rates are one third of
+those in `configs/bass-release-margin-finetune.json`. Use the same
+training entry point, authenticated Bass release and fixed Drums and Vocals
+checkpoints. The sampling addresses, optimizer settings other than the
+learning rate, and EMA decay are identical. Recovery uses the configuration
+stored with this training run.
