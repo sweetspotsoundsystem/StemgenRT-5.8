@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 import torch
 from stemgenrt import checkpoint as ck
+from stemgenrt.bass_interpolation import interpolate_bass_emas
 from stemgenrt.independent import IndependentStems, SOURCE_ORDER
 from stemgenrt.independent_export import export_fp32
 from examples.native_independent.prepare import load_endpoint
@@ -57,13 +58,18 @@ def native_fixture(model, output, report, checkpoints):
         "state_shapes": report["interface"]["input_shapes"][1:], "frames": lengths,
         "sample_rate": 44100, "hop": 128, "source_order": list(SOURCE_ORDER),
         "runtime_inference_used": False,
-        "reference": "Independent native PyTorch EMA models; zero state, one graph flush, exact partial-EOF crop"})
+        "reference": ("Independent native PyTorch models with interpolated Bass, zero state, one graph flush and exact partial-EOF crop"
+                      if checkpoints.get("bass", {}).get("role") == "interpolated_inference" else
+                      "Independent native PyTorch EMA models; zero state, one graph flush, exact partial-EOF crop")})
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-updates", type=int, required=True)
+    parser.add_argument("--bass-blend-parent", type=Path, help="Frozen Bass EMA that initialized the continuation")
+    parser.add_argument("--bass-blend-parent-sha256", help="Expected SHA-256 of the parent Bass checkpoint")
+    parser.add_argument("--bass-trained-fraction", type=float, help="Fraction of the continuation in the parameter interpolation")
     for source in SOURCE_ORDER[:3]:
         parser.add_argument("--"+source+"-checkpoint", type=Path, required=True)
         parser.add_argument("--"+source+"-sha256", required=True)
@@ -74,6 +80,9 @@ def main():
     args = parser.parse_args()
     if args.output.exists() or args.expected_updates <= 0:
         parser.error("Require a new output directory and positive expected updates")
+    blend_options = (args.bass_blend_parent, args.bass_blend_parent_sha256, args.bass_trained_fraction)
+    if any(x is not None for x in blend_options) and any(x is None for x in blend_options):
+        parser.error("Bass interpolation requires the parent checkpoint, its SHA-256 and the trained fraction")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     assert not torch.cuda.is_initialized()
@@ -91,6 +100,15 @@ def main():
             "parent_updates": parent_updates, "total_updates": child.provenance["training_updates"],
             "state_sha256": ck.state_sha256(child.state_dict()),
             "ema_parameters_sha256": ck.state_sha256(dict(child.named_parameters()))}
+    if args.bass_blend_parent is not None:
+        parent = ck.load_model(args.bass_blend_parent, expected_sha256=args.bass_blend_parent_sha256, role="ema")
+        continued = checkpoints["bass"]
+        bass = interpolate_bass_emas(parent, children["bass"], trained_fraction=args.bass_trained_fraction)
+        children["bass"] = bass
+        checkpoints["bass"] = {"role": "interpolated_inference", "updates": continued["updates"],
+            "parent_updates": continued["parent_updates"], "total_updates": continued["total_updates"],
+            "parent_checkpoint_sha256": args.bass_blend_parent_sha256, "continuation_checkpoint": continued,
+            "interpolation": bass.provenance["bass_ema_interpolation"], "state_sha256": ck.state_sha256(bass.state_dict())}
     model = IndependentStems(**children)
     args.output.mkdir(parents=True)
     report = export_fp32(model, args.output / "model.onnx")
