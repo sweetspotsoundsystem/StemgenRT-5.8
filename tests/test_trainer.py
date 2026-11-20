@@ -228,6 +228,7 @@ def test_resume_uses_restored_objects_cursor_identities_and_rng(harness, monkeyp
     expected_config.pop("teacher_checkpoint")
     expected_config.pop("auxiliary_weight")
     expected_config.pop("residual_other_weight")
+    expected_config.pop("residual_other_sdr_weight")
     expected_config.pop("residual_peer_sha256")
     expected_config.pop("release_margin_weight")
     expected_config.pop("bass_release_sha256")

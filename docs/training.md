@@ -404,3 +404,27 @@ The first recipe uses the fixed Bass-only view. The second uses the alternating
 hard-solo sampler. Compare their final EMAs on the same evaluation excerpts
 at the original levels. The journal records the crop addresses, audio hashes
 before and after remixing, learning rates, and selected views.
+
+### Train Bass with active-window residual Other SDR
+
+Use `configs/bass-residual-window-sdr.json` with the same released Bass EMA,
+frozen Drums and Vocals checkpoints, and training command as the hard-solo
+repeat. Both recipes use 8,000 updates and the same 128,000 crop addresses.
+
+On each of the 16 ordinary mixtures, compute Other from the aligned stereo
+waveforms as `mixture - ((drums + bass) + vocals)`. The recipe weights the
+mixture-normalized Other error by 3.6397063864983807. It also weights negative
+Other SDR in dB by 0.043483909366881006. Both coefficients come from gradient
+norms on eight training batches at the released Bass weights.
+
+The SDR term uses complete one-second windows whose recorded Other reference
+is above −50 dBFS. It uses stereo signal and error energies, a ratio epsilon
+of 1e-12, and bounds of −60 to +60 dB. Average the eligible windows within
+each crop, then average the eligible crops equally. A group with no eligible
+crops contributes zero SDR loss and zero SDR gradient. The mixture-normalized
+term still covers every crop. The trainer computes both terms from a single
+render of each frozen peer and applies them to the ordinary group once. The
+journal records the two losses and the active window and crop counts.
+Checkpoints bind both coefficients, the metric settings and the peer hashes
+for recovery. A zero or omitted `residual_other_sdr_weight` uses the original
+residual Other recipe.

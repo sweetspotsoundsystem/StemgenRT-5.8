@@ -390,7 +390,7 @@ def _auxiliary_weight(value):
 
 def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None,
            auxiliary_target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other_weight=0.,
-           release_margin_weight=0., release_margin_solo_multiplier=1., solo_index=VIEW_INDICES[1]):
+           release_margin_weight=0., release_margin_solo_multiplier=1., solo_index=VIEW_INDICES[1], residual_other_sdr_weight=0.):
     source_index(target_source)
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
@@ -434,6 +434,13 @@ def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., targ
     if residual_other_weight:
         result.update(version="bass-residual-other-v1", residual_other_weight=residual_other_weight,
                       loss="Bass objective plus ordinary residual Other MSE normalized by scored mixture power",
+                      frozen_peer_roles=["drums EMA", "vocals EMA"], production_recipe_selected=False)
+    if residual_other_sdr_weight or type(residual_other_sdr_weight) is bool:
+        from ._losses.residual_other import WINDOW_SDR_VERSION, validate_weights
+        validate_weights(residual_other_weight, residual_other_sdr_weight)
+        result.update(version=WINDOW_SDR_VERSION, residual_other_version=WINDOW_SDR_VERSION,
+                      residual_other_sdr_weight=residual_other_sdr_weight, residual_other_weight=residual_other_weight,
+                      loss="Bass objective plus weighted ordinary residual Other error and negative active-window SDR",
                       frozen_peer_roles=["drums EMA", "vocals EMA"], production_recipe_selected=False)
     if release_margin_weight or release_margin_solo_multiplier != 1. or type(release_margin_solo_multiplier) is bool:
         from ._losses.release_margin import SOLO_VERSION, VERSION as margin_version, validate_solo_multiplier
@@ -505,9 +512,16 @@ def accumulate_group(model, mixture, targets, *, group, microbatch, warmup_sampl
     value = terms.total if group == "ordinary" else auxiliary_weight * terms.total
     details = {}
     if residual_other is not None:
-        other_term = residual_other(deployed[:, 0], mixture, other_reference,
-                                    warmup_samples=warmup_samples, microbatch=microbatch)
-        value = value + residual_other.weight * other_term
+        if getattr(residual_other, "sdr_weight", 0.):
+            other_term, sdr_term, counts = residual_other.windowed_terms(
+                deployed[:, 0], mixture, other_reference, warmup_samples=warmup_samples, microbatch=microbatch)
+            value = value + residual_other.weight * other_term + residual_other.sdr_weight * sdr_term
+            details.update(residual_other_sdr_weight=residual_other.sdr_weight,
+                           residual_other_sdr_loss_unweighted=float(sdr_term.detach()), residual_other_sdr_counts=counts)
+        else:
+            other_term = residual_other(deployed[:, 0], mixture, other_reference,
+                                        warmup_samples=warmup_samples, microbatch=microbatch)
+            value = value + residual_other.weight * other_term
         if not bool(torch.isfinite(value)):
             raise FloatingPointError("Nonfinite residual Other objective")
         details.update(residual_other_weight=residual_other.weight,
@@ -676,6 +690,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
     return {"step": step, "accumulation_policy": policy(extra_ordinary_primary_sdr_weight=extra,
             teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source,
             auxiliary_weight=auxiliary_weight, residual_other_weight=residual_other.weight if residual_other else 0.,
+            residual_other_sdr_weight=getattr(residual_other, "sdr_weight", 0.),
             release_margin_weight=release_margin.weight if release_margin else 0.,
             release_margin_solo_multiplier=getattr(release_margin, "solo_multiplier", 1.), solo_index=solo_index),
             "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
