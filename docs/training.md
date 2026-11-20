@@ -373,3 +373,20 @@ training entry point, authenticated Bass release and fixed Drums and Vocals
 checkpoints. The sampling addresses, optimizer settings other than the
 learning rate, and EMA decay are identical. Recovery uses the configuration
 stored with this training run.
+
+### Sampling difficult isolated Bass
+
+`configs/bass-hard-solo-finetune.json` uses the lower-rate continuation and
+changes how the trainer chooses its single Bass-only source view. Odd updates
+use the original batch index 15. On even updates the frozen released Bass EMA
+renders all 16 isolated, augmented Bass crops from the beginning of their
+warmup. Each crop needs at least two complete active one-second windows.
+The trainer chooses the lowest mean bounded SDR below 50 dB. It prefers
+index 15 in a tie, then the lowest index. If no crop qualifies, it uses 15.
+
+The trainer uses the selected crop for both the existing auxiliary Bass-only
+loss and its release margin. The 16 ordinary mixtures, Bass-removed view at
+index 14, per-view weights and number of optimizer updates use the same
+recipe. The journal records the selected index, window counts and release
+scores for each screened group. Checkpoint recovery validates the sampler and
+its release fingerprint. Inference uses the trained Bass specialist directly.

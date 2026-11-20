@@ -293,7 +293,13 @@ class Groups:
     auxiliary: BatchReduction
 
 
-def source_views(mixture, targets, *, target_source="vocals"):
+def _source_view_indices(target_source, solo_index):
+    if type(solo_index) is not int or not 0 <= solo_index < 16 or (target_source != "bass" and solo_index != VIEW_INDICES[1]):
+        raise ValueError("Only Bass supports an alternate solo index in the sixteen-example group")
+    return [VIEW_INDICES[0], solo_index]
+
+
+def source_views(mixture, targets, *, target_source="vocals", solo_index=VIEW_INDICES[1]):
     """Derive additional full-context inputs after ordinary augmentation.
 
 Call on the entire warmup-plus-scored crop. Every view needs freshly computed
@@ -309,7 +315,7 @@ from the corresponding ordinary mixture. Inputs are never modified in place.
         raise ValueError("Nonfinite source-view inputs")
     index = source_index(target_source)
     _require(index is not None, "Source views require one named target")
-    selected = targets[list(VIEW_INDICES)].clone()
+    selected = targets[_source_view_indices(target_source, solo_index)].clone()
     keep = torch.ones(2, 4, dtype=torch.bool, device=targets.device)
     keep[0, index] = False
     keep[1] = False
@@ -384,13 +390,13 @@ def _auxiliary_weight(value):
 
 def policy(*, extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., target_source=None,
            auxiliary_target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other_weight=0.,
-           release_margin_weight=0., release_margin_solo_multiplier=1.):
+           release_margin_weight=0., release_margin_solo_multiplier=1., solo_index=VIEW_INDICES[1]):
     source_index(target_source)
     extra = _extra_primary_weight(extra_ordinary_primary_sdr_weight)
     teacher = _teacher_weight(teacher_coefficient)
     result = {"version": VERSION, "loss": "Unchanged ordinary16 plus 0.1 joint source-view2 with view multipliers [1,0.25]",
             "ordinary_examples": 16, "auxiliary_examples": 2, "auxiliary_weight": _auxiliary_weight(auxiliary_weight),
-            "view_indices": list(VIEW_INDICES), "view_weights": list(VIEW_WEIGHTS),
+            "view_indices": _source_view_indices(target_source, solo_index), "view_weights": list(VIEW_WEIGHTS),
             "direct_sdr_weight": SDR_WEIGHT,
             "capture": "Grad-enabled microbatch renders, detached output coordinates only; release each neural graph",
             "output_derivatives": "One FP32 complete-group scalar per group; auxiliary view weights retain complete-group denominators",
@@ -581,11 +587,11 @@ def accumulate_groups(model, mixture_cpu, targets_cpu, *, warmup_samples, ordina
                       auxiliary_microbatch=2, check_continue=None, after_group=None,
                       verify_input_gradients=False, progress=None, extra_ordinary_primary_sdr_weight=0.,
                       teacher_coefficient=0., teacher_targets=None, target_source=None,
-                      auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None, release_margin=None):
+                      auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None, release_margin=None, solo_index=VIEW_INDICES[1]):
     teacher = _teacher_weight(teacher_coefficient)
     single_source = tuple(model.architecture_metadata["source_order"]) == (target_source,)
     auxiliary_mix, auxiliary_targets = source_views(mixture_cpu, targets_cpu,
-                                                    target_source=target_source if single_source else "vocals")
+                                                    target_source=target_source if single_source else "vocals", solo_index=solo_index)
     device = next(model.parameters()).device
     inputs = {"ordinary": (mixture_cpu.to(device), targets_cpu.to(device)),
               "auxiliary": (auxiliary_mix.to(device), auxiliary_targets.to(device))}
@@ -614,7 +620,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, extra_ordinary_primary_sdr_weight=0.,
                    teacher_coefficient=0., teacher_targets=None, target_source=None,
-                   auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None, release_margin=None):
+                   auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None, release_margin=None, solo_index=VIEW_INDICES[1]):
     """Accumulate both independently normalized groups, then clip/update once.
 
     Optional callbacks run only before the final update, and may raise to stop
@@ -648,7 +654,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
         ordinary_microbatch=ordinary_microbatch, auxiliary_microbatch=auxiliary_microbatch,
         check_continue=check_continue, after_group=after_group, extra_ordinary_primary_sdr_weight=extra,
         teacher_coefficient=teacher, teacher_targets=teacher_targets, target_source=target_source,
-        auxiliary_weight=auxiliary_weight, residual_other=residual_other, release_margin=release_margin)
+        auxiliary_weight=auxiliary_weight, residual_other=residual_other, release_margin=release_margin, solo_index=solo_index)
     gradient_norms = {}
     for name, parameter in model.named_parameters():
         _require(parameter.grad is not None and bool(torch.isfinite(parameter.grad).all()),
@@ -671,7 +677,7 @@ def _grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
             teacher_coefficient=teacher, target_source=target_source, auxiliary_target_source=auxiliary_source,
             auxiliary_weight=auxiliary_weight, residual_other_weight=residual_other.weight if residual_other else 0.,
             release_margin_weight=release_margin.weight if release_margin else 0.,
-            release_margin_solo_multiplier=getattr(release_margin, "solo_multiplier", 1.)),
+            release_margin_solo_multiplier=getattr(release_margin, "solo_multiplier", 1.), solo_index=solo_index),
             "groups": rows, "weighted_loss": sum(r["weighted_loss"] for r in rows.values()),
             "gradient_norm_before_clip": float(norm), "parameter_gradient_norms": gradient_norms, **endpoint}
 
@@ -680,7 +686,7 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
                    warmup_samples, ordinary_microbatch=4, auxiliary_microbatch=2,
                    check_continue=None, after_group=None, share_gru_weights=True,
                    extra_ordinary_primary_sdr_weight=0., teacher_coefficient=0., teacher_targets=None,
-                   target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None, release_margin=None):
+                   target_source=None, auxiliary_weight=AUXILIARY_WEIGHT, residual_other=None, release_margin=None, solo_index=VIEW_INDICES[1]):
     """Complete both loss groups, then clip, advance Adam and update EMA once.
 
     CUDA BF16 replay shares exactly equal saved GRU transposes by default.
@@ -703,4 +709,4 @@ def grouped_update(model, optimizer, ema, mixture_cpu, targets_cpu, *, step,
             auxiliary_microbatch=auxiliary_microbatch, check_continue=check_continue,
             after_group=after_group, extra_ordinary_primary_sdr_weight=extra_ordinary_primary_sdr_weight,
             teacher_coefficient=teacher_coefficient, teacher_targets=teacher_targets, target_source=target_source,
-            auxiliary_weight=auxiliary_weight, residual_other=residual_other, release_margin=release_margin)
+            auxiliary_weight=auxiliary_weight, residual_other=residual_other, release_margin=release_margin, solo_index=solo_index)
