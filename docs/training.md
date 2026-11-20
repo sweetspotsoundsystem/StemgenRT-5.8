@@ -390,3 +390,17 @@ index 14, per-view weights and number of optimizer updates use the same
 recipe. The journal records the selected index, window counts and release
 scores for each screened group. Checkpoint recovery validates the sampler and
 its release fingerprint. Inference uses the trained Bass specialist directly.
+
+### Repeat the matched Bass sampling experiment
+
+`configs/bass-low-lr-repeat.json` and `configs/bass-hard-solo-repeat.json`
+start at crop address 8,768,000, immediately after the original 8,000-update
+experiments. Both consume 128,000 new crop addresses from the same training
+recordings. Use the released Bass EMA as the starting checkpoint and release
+reference for each run, with the same frozen Drums and Vocals peers described
+above. Give each run a separate output directory and a fresh optimizer.
+
+The first recipe uses the fixed Bass-only view. The second uses the alternating
+hard-solo sampler. Compare their final EMAs on the same evaluation excerpts
+at the original levels. The journal records the crop addresses, audio hashes
+before and after remixing, learning rates, and selected views.
