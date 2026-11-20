@@ -71,6 +71,7 @@ class TrainingConfig:
     release_margin_weight: float = 0.
     bass_release_sha256: str | None = None
     release_margin_solo_multiplier: float = 1.
+    bass_solo_sampling: str = "fixed"
 
     def validate(self):
         source_index(self.target_source)
@@ -123,6 +124,11 @@ class TrainingConfig:
         validate_margin(self.release_margin_weight, self.bass_release_sha256, solo_multiplier=self.release_margin_solo_multiplier)
         if self.release_margin_weight and (self.model_family != "specialist" or self.target_source != "bass"):
             raise ValueError("Release margin supervision requires a Bass specialist")
+        from ._losses.solo_sampling import VERSION as hard_solo_version
+        if self.bass_solo_sampling not in ("fixed", hard_solo_version):
+            raise ValueError("Unknown Bass solo sampling mode")
+        if self.bass_solo_sampling != "fixed" and not self.release_margin_weight:
+            raise ValueError("Hard solo sampling requires the authenticated Bass release margin reference")
         if self.teacher_coefficient and (not self.teacher_checkpoint
                 or self.extra_ordinary_primary_sdr_weight != .2):
             raise ValueError("Teacher training requires its checkpoint and extra_ordinary_primary_sdr_weight=0.2")
@@ -242,6 +248,8 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
             specialist_waveform_basis=(0 if config.target_source == "bass" else 256)
                 if config.specialist_waveform_basis is None else config.specialist_waveform_basis).validate()
     config_dict = asdict(config)
+    if config.bass_solo_sampling == "fixed":
+        config_dict.pop("bass_solo_sampling")
     if config.release_margin_solo_multiplier == 1.:
         config_dict.pop("release_margin_solo_multiplier")
     if not config.release_margin_weight:
@@ -364,6 +372,12 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
             model.provenance["current_stage_bass_release_margin"] = release_margin.specification
         else:
             model.provenance.pop("current_stage_bass_release_margin", None)
+        if config.bass_solo_sampling != "fixed":
+            from ._losses.solo_sampling import specification as solo_sampling_spec
+            model.provenance["current_stage_bass_solo_sampling"] = {
+                **solo_sampling_spec(), "reference_sha256": config.bass_release_sha256}
+        else:
+            model.provenance.pop("current_stage_bass_solo_sampling", None)
         if teacher_provider is not None or getattr(model, "provenance", {}).get("branch_memory_current_stage_teacher_supervision"):
             from .teacher import attach
             attach(model, teacher_provider.specification if teacher_provider is not None else None)
@@ -430,13 +444,21 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                     teacher_options = {"teacher_coefficient": config.teacher_coefficient,
                                        "teacher_targets": teacher_targets.to(device)}
                     del teacher_targets
+                solo_options = {}
+                if config.bass_solo_sampling != "fixed":
+                    from ._losses.solo_sampling import select_for_update
+                    selection = select_for_update(release_margin.model, targets[:, 1], step=step + 1,
+                        warmup_samples=config.warmup_samples, microbatch=config.microbatch_size)
+                    solo_options["solo_index"] = selection["selected_index"]
                 update = grouped_update(model, optimizer, ema, mixture, targets, step=step + 1,
                     warmup_samples=config.warmup_samples, ordinary_microbatch=config.microbatch_size,
                     auxiliary_microbatch=config.auxiliary_microbatch_size,
                     extra_ordinary_primary_sdr_weight=config.extra_ordinary_primary_sdr_weight,
                     auxiliary_weight=config.auxiliary_weight,
                     target_source=config.target_source, residual_other=residual_other,
-                    release_margin=release_margin, **teacher_options)
+                    release_margin=release_margin, **teacher_options, **solo_options)
+                if solo_options:
+                    update["bass_solo_selection"] = selection
                 del teacher_options
                 step += 1
                 if type(model) in (CompactSeparator, BandSeparator, SpecialistSeparator):
