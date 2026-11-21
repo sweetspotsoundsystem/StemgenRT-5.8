@@ -428,3 +428,27 @@ journal records the two losses and the active window and crop counts.
 Checkpoints bind both coefficients, the metric settings and the peer hashes
 for recovery. A zero or omitted `residual_other_sdr_weight` uses the original
 residual Other recipe.
+
+### Averaging two matched Bass training runs
+
+Train the two Bass continuations independently from the released 40,000-update
+Bass EMA. Use `train_streaming.py` with `configs/bass-hard-solo-finetune.json`
+for the first run and `configs/bass-hard-solo-repeat.json` for the second. Each
+run uses its own output directory and the same recorded training and validation
+manifests, frozen Drums and Vocals checkpoints, and Bass release checkpoint for
+the preservation objective. The first recipe starts at crop address 8,640,000,
+the second at 8,768,000. Each performs 8,000 optimizer updates with 16 crops per
+update. Keep both complete training checkpoints and their SHA-256 digests.
+
+With the usual `scripts/export_independent_model.py` arguments, pass one
+continuation as `--bass-checkpoint` with its `--bass-sha256`. Pass the other as
+`--bass-replicate-checkpoint` with its `--bass-replicate-sha256`. Set
+`--expected-updates 40000 --bass-updates 8000 --bass-parent-updates 40000`.
+The exporter checks the common initialization, matching training recipes and
+dataset identities, disjoint crop addresses, and fixed buffers. It averages the
+two final EMA parameter tensors in FP64 and rounds each mean once to FP32.
+
+The exported graph runs one Bass specialist. The export manifest records both
+checkpoint hashes, the crop ranges, each EMA fingerprint, and the resulting
+state fingerprint. The original checkpoints retain the optimizer and RNG states
+needed to recover each individual training run.

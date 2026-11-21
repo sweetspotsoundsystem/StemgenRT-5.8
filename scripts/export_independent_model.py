@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from stemgenrt import checkpoint as ck
 from stemgenrt.bass_interpolation import interpolate_bass_emas
+from stemgenrt.bass_replicate_average import average_bass_replicates
 from stemgenrt.independent import IndependentStems, SOURCE_ORDER
 from stemgenrt.independent_export import export_fp32
 from examples.native_independent.prepare import load_endpoint
@@ -50,6 +51,11 @@ def native_fixture(model, output, report, checkpoints):
             stream.write(struct.pack("<I", frames))
             stream.write(audio.astype("<f4").tobytes())
             stream.write(aligned.astype("<f4").tobytes())
+    bass_role = checkpoints.get("bass", {}).get("role")
+    reference = {
+        "interpolated_inference": "Independent native PyTorch models with interpolated Bass, zero state, one graph flush and exact partial-EOF crop",
+        "replicate_average_inference": "Independent native PyTorch models with averaged Bass replicates, zero state, one graph flush and exact partial-EOF crop",
+    }.get(bass_role, "Independent native PyTorch EMA models; zero state, one graph flush, exact partial-EOF crop")
     write(output / "independent-pytorch.json", {
         "format": "SGRTG001: LE uint32 case count, then LE uint32 frames, input[2,T], deployed[4,2,T] LE float32",
         "fixture_sha256": ck.file_sha256(path), "generator_sha256": ck.file_sha256(__file__),
@@ -58,9 +64,7 @@ def native_fixture(model, output, report, checkpoints):
         "state_shapes": report["interface"]["input_shapes"][1:], "frames": lengths,
         "sample_rate": 44100, "hop": 128, "source_order": list(SOURCE_ORDER),
         "runtime_inference_used": False,
-        "reference": ("Independent native PyTorch models with interpolated Bass, zero state, one graph flush and exact partial-EOF crop"
-                      if checkpoints.get("bass", {}).get("role") == "interpolated_inference" else
-                      "Independent native PyTorch EMA models; zero state, one graph flush, exact partial-EOF crop")})
+        "reference": reference})
 
 
 def main():
@@ -70,6 +74,8 @@ def main():
     parser.add_argument("--bass-blend-parent", type=Path, help="Frozen Bass EMA that initialized the continuation")
     parser.add_argument("--bass-blend-parent-sha256", help="Expected SHA-256 of the parent Bass checkpoint")
     parser.add_argument("--bass-trained-fraction", type=float, help="Fraction of the continuation in the parameter interpolation")
+    parser.add_argument("--bass-replicate-checkpoint", type=Path, help="Second matched training run for an equal average of the two final Bass EMAs")
+    parser.add_argument("--bass-replicate-sha256", help="Expected SHA-256 of the second full Bass training checkpoint")
     for source in SOURCE_ORDER[:3]:
         parser.add_argument("--"+source+"-checkpoint", type=Path, required=True)
         parser.add_argument("--"+source+"-sha256", required=True)
@@ -83,6 +89,10 @@ def main():
     blend_options = (args.bass_blend_parent, args.bass_blend_parent_sha256, args.bass_trained_fraction)
     if any(x is not None for x in blend_options) and any(x is None for x in blend_options):
         parser.error("Bass interpolation requires the parent checkpoint, its SHA-256 and the trained fraction")
+    if (args.bass_replicate_checkpoint is None) != (args.bass_replicate_sha256 is None):
+        parser.error("Bass replicate averaging requires the second checkpoint and its SHA-256")
+    if args.bass_replicate_checkpoint is not None and args.bass_blend_parent is not None:
+        parser.error("Choose a single Bass parameter-averaging method")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     assert not torch.cuda.is_initialized()
@@ -109,6 +119,14 @@ def main():
             "parent_updates": continued["parent_updates"], "total_updates": continued["total_updates"],
             "parent_checkpoint_sha256": args.bass_blend_parent_sha256, "continuation_checkpoint": continued,
             "interpolation": bass.provenance["bass_ema_interpolation"], "state_sha256": ck.state_sha256(bass.state_dict())}
+    if args.bass_replicate_checkpoint is not None:
+        first = checkpoints["bass"]
+        bass = average_bass_replicates(args.bass_checkpoint, args.bass_replicate_checkpoint,
+                                      first_sha256=args.bass_sha256, second_sha256=args.bass_replicate_sha256)
+        children["bass"] = bass
+        checkpoints["bass"] = {"role": "replicate_average_inference", "updates": first["updates"],
+            "parent_updates": first["parent_updates"], "total_updates": first["total_updates"],
+            "replicate_average": bass.provenance["bass_replicate_average"], "state_sha256": ck.state_sha256(bass.state_dict())}
     model = IndependentStems(**children)
     args.output.mkdir(parents=True)
     report = export_fp32(model, args.output / "model.onnx")
