@@ -1,4 +1,6 @@
 from dataclasses import replace
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -92,3 +94,51 @@ def test_hard_solo_training_config_and_recovery_match_the_reference():
         _validate_training_provenance({k:v for k,v in compact.items() if k!="bass_solo_sampling"},provenance)
     with pytest.raises(ValueError,match="solo sampling"):
         _validate_training_provenance(compact,{**provenance,"current_stage_bass_solo_sampling":sampling.specification()})
+
+def test_quarter_rate_selects_the_same_difficult_view_on_shared_steps(monkeypatch):
+    calls = []
+    released, bass = object(), object()
+    def screen(model, crops, *, warmup_samples, microbatch):
+        assert model is released and crops is bass
+        calls.append((warmup_samples, microbatch))
+        return {"selected_index":8, "screened":True}
+    monkeypatch.setattr(sampling, "screen_batch", screen)
+    default = {"selected_index":15, "screened":False}
+    for step in range(1, 17):
+        def select(version):
+            return sampling.select_for_update(released, bass, step=step, warmup_samples=256,
+                                              microbatch=4, version=version)
+        before = len(calls)
+        quarter = select(sampling.QUARTER_RATE_VERSION)
+        assert len(calls)-before == int(step % 4 == 0)
+        hard = select(sampling.VERSION)
+        assert quarter == (hard if step % 4 == 0 else default)
+        assert (hard != default) == (step % 2 == 0)
+    assert calls == [(256,4)]*12
+    with pytest.raises(ValueError, match="sampling"):
+        sampling.select_for_update(released, bass, step=1, warmup_samples=256, microbatch=4, version="unknown")
+
+
+def test_quarter_rate_checkpoint_binds_schedule_and_matching_recipe():
+    folder = Path(__file__).resolve().parents[1] / "configs"
+    def recipe(name):
+        return json.loads((folder / name).read_text())
+    hard = recipe("bass-hard-solo-repeat.json")
+    quarter = recipe("bass-quarter-rate-solo.json")
+    assert quarter == {**hard, "bass_solo_sampling":sampling.QUARTER_RATE_VERSION}
+    config = TrainingConfig(**quarter)
+    assert config.validate() == config
+    digest, weight = config.bass_release_sha256, config.release_margin_weight
+    compact = {"model_family":"specialist", "target_source":"bass", "release_margin_weight":weight,
+               "bass_release_sha256":digest, "bass_solo_sampling":sampling.QUARTER_RATE_VERSION}
+    spec = sampling.specification(sampling.QUARTER_RATE_VERSION)
+    assert spec == {**sampling.specification(), "version":sampling.QUARTER_RATE_VERSION,
+                    "screen_on":"every fourth one-based optimizer update"}
+    provenance = {"current_stage_bass_release_margin":margin_specification(weight,digest),
+                  "current_stage_bass_solo_sampling":{**spec,"reference_sha256":digest}}
+    _validate_training_provenance(compact,provenance)
+    with pytest.raises(ValueError,match="solo sampling"):
+        _validate_training_provenance({**compact,"bass_solo_sampling":sampling.VERSION},provenance)
+    with pytest.raises(ValueError,match="solo sampling"):
+        _validate_training_provenance(compact,{**provenance,"current_stage_bass_solo_sampling":{
+            **sampling.specification(), "reference_sha256":digest}})

@@ -404,10 +404,10 @@ def _validate_training_provenance(config, provenance):
                      weight, config.get("bass_release_sha256"), solo_multiplier=config.get("release_margin_solo_multiplier", 1.)),
                  "Bass release margin checkpoint recipe differs from its training provenance")
     if "bass_solo_sampling" in config or "current_stage_bass_solo_sampling" in provenance:
-        from ._losses.solo_sampling import VERSION as hard_solo_version, specification as solo_sampling_spec
-        _require(config.get("bass_solo_sampling") == hard_solo_version and config.get("release_margin_weight", 0.) > 0
+        from ._losses.solo_sampling import QUARTER_RATE_VERSION, VERSION as hard_solo_version, specification as solo_sampling_spec
+        _require(config.get("bass_solo_sampling") in (hard_solo_version, QUARTER_RATE_VERSION) and config.get("release_margin_weight", 0.) > 0
                  and provenance.get("current_stage_bass_solo_sampling") == {
-                     **solo_sampling_spec(), "reference_sha256": config.get("bass_release_sha256")},
+                     **solo_sampling_spec(config["bass_solo_sampling"]), "reference_sha256": config.get("bass_release_sha256")},
                  "Bass solo sampling checkpoint recipe differs from its training provenance")
     if ("residual_other_weight" in config or "residual_other_sdr_weight" in config or "residual_peer_sha256" in config
             or "current_stage_residual_other" in provenance):

@@ -129,8 +129,8 @@ class TrainingConfig:
         validate_margin(self.release_margin_weight, self.bass_release_sha256, solo_multiplier=self.release_margin_solo_multiplier)
         if self.release_margin_weight and (self.model_family != "specialist" or self.target_source != "bass"):
             raise ValueError("Release margin supervision requires a Bass specialist")
-        from ._losses.solo_sampling import VERSION as hard_solo_version
-        if self.bass_solo_sampling not in ("fixed", hard_solo_version):
+        from ._losses.solo_sampling import QUARTER_RATE_VERSION, VERSION as hard_solo_version
+        if self.bass_solo_sampling not in ("fixed", hard_solo_version, QUARTER_RATE_VERSION):
             raise ValueError("Unknown Bass solo sampling mode")
         if self.bass_solo_sampling != "fixed" and not self.release_margin_weight:
             raise ValueError("Hard solo sampling requires the authenticated Bass release margin reference")
@@ -382,7 +382,7 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         if config.bass_solo_sampling != "fixed":
             from ._losses.solo_sampling import specification as solo_sampling_spec
             model.provenance["current_stage_bass_solo_sampling"] = {
-                **solo_sampling_spec(), "reference_sha256": config.bass_release_sha256}
+                **solo_sampling_spec(config.bass_solo_sampling), "reference_sha256": config.bass_release_sha256}
         else:
             model.provenance.pop("current_stage_bass_solo_sampling", None)
         if teacher_provider is not None or getattr(model, "provenance", {}).get("branch_memory_current_stage_teacher_supervision"):
@@ -455,7 +455,7 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
                 if config.bass_solo_sampling != "fixed":
                     from ._losses.solo_sampling import select_for_update
                     selection = select_for_update(release_margin.model, targets[:, 1], step=step + 1,
-                        warmup_samples=config.warmup_samples, microbatch=config.microbatch_size)
+                        version=config.bass_solo_sampling, warmup_samples=config.warmup_samples, microbatch=config.microbatch_size)
                     solo_options["solo_index"] = selection["selected_index"]
                 update = grouped_update(model, optimizer, ema, mixture, targets, step=step + 1,
                     warmup_samples=config.warmup_samples, ordinary_microbatch=config.microbatch_size,

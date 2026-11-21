@@ -5,14 +5,25 @@ from ..model import render_scored_context
 from .release_margin import METRICS, _energy, _level, _ratio
 
 VERSION = "alternating-release-hard-solo-v1"
+QUARTER_RATE_VERSION = "quarter-rate-release-hard-solo-v1"
 DEFAULT_INDEX = 15
 THRESHOLD_DB = 50.
 MIN_ACTIVE_WINDOWS = 2
 
 
-def specification():
-    return {"version": VERSION, "default_index": DEFAULT_INDEX, "candidate_count": 16,
-            "screen_on": "even one-based optimizer updates", "minimum_active_windows": MIN_ACTIVE_WINDOWS,
+def screen_interval(version):
+    if version == VERSION:
+        return 2
+    if version == QUARTER_RATE_VERSION:
+        return 4
+    raise ValueError("Unknown Bass solo sampling recipe")
+
+
+def specification(version=VERSION):
+    interval = screen_interval(version)
+    screen_on = "even one-based optimizer updates" if interval == 2 else "every fourth one-based optimizer update"
+    return {"version": version, "default_index": DEFAULT_INDEX, "candidate_count": 16,
+            "screen_on": screen_on, "minimum_active_windows": MIN_ACTIVE_WINDOWS,
             "maximum_mean_sdr_db_exclusive": THRESHOLD_DB, "reference_role": "released Bass EMA",
             "tie_break": "prefer default, then lowest index"}
 
@@ -56,9 +67,9 @@ def screen_batch(released, bass, *, warmup_samples, microbatch):
     return choose_solo(truth, torch.cat(estimates))
 
 
-def select_for_update(released, bass, *, step, warmup_samples, microbatch):
+def select_for_update(released, bass, *, step, warmup_samples, microbatch, version=VERSION):
     if type(step) is not int or step < 1:
         raise ValueError("Expected a positive one-based optimizer update")
-    if step % 2:
+    if step % screen_interval(version):
         return {"selected_index": DEFAULT_INDEX, "screened": False}
     return screen_batch(released, bass, warmup_samples=warmup_samples, microbatch=microbatch)
