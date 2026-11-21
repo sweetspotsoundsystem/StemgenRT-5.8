@@ -72,6 +72,11 @@ class TrainingConfig:
     bass_release_sha256: str | None = None
     release_margin_solo_multiplier: float = 1.
     bass_solo_sampling: str = "fixed"
+    residual_other_sdr_weight: float = 0.
+
+    @property
+    def uses_residual_other(self):
+        return bool(self.residual_other_weight or self.residual_other_sdr_weight)
 
     def validate(self):
         source_index(self.target_source)
@@ -117,8 +122,8 @@ class TrainingConfig:
         _teacher_weight(self.teacher_coefficient)
         _auxiliary_weight(self.auxiliary_weight)
         from ._losses.residual_other import validate_recipe
-        validate_recipe(self.residual_other_weight, self.residual_peer_sha256)
-        if self.residual_other_weight and (self.model_family != "specialist" or self.target_source != "bass"):
+        validate_recipe(self.residual_other_weight, self.residual_peer_sha256, sdr_weight=self.residual_other_sdr_weight)
+        if self.uses_residual_other and (self.model_family != "specialist" or self.target_source != "bass"):
             raise ValueError("Residual Other supervision requires a Bass specialist")
         from ._losses.release_margin import validate_recipe as validate_margin
         validate_margin(self.release_margin_weight, self.bass_release_sha256, solo_multiplier=self.release_margin_solo_multiplier)
@@ -220,7 +225,7 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     """
     config.validate()
     peer_paths = (drums_checkpoint, vocals_checkpoint)
-    if any((path is not None) != bool(config.residual_other_weight) for path in peer_paths):
+    if any((path is not None) != config.uses_residual_other for path in peer_paths):
         raise ValueError("Supply both peer checkpoints exactly when residual Other supervision is enabled")
     if (bass_release_checkpoint is not None) != bool(config.release_margin_weight):
         raise ValueError("Supply the reference Bass checkpoint exactly when release margin supervision is enabled")
@@ -255,7 +260,9 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
     if not config.release_margin_weight:
         config_dict.pop("release_margin_weight")
         config_dict.pop("bass_release_sha256")
-    if not config.residual_other_weight:
+    if not config.residual_other_sdr_weight:
+        config_dict.pop("residual_other_sdr_weight")
+    if not config.uses_residual_other:
         config_dict.pop("residual_other_weight")
         config_dict.pop("residual_peer_sha256")
     if config.band_feature_n_fft == 1024:
@@ -304,11 +311,11 @@ def train(config, manifest, output, *, checkpoint=None, resume=None, sha256=None
         data_identity["validation_manifest_sha256"] = validation.sha256
     device = configure_determinism(config)
     residual_other = None
-    if config.residual_other_weight:
+    if config.uses_residual_other:
         from ._losses.residual_other import ResidualOtherLoss
         residual_other = ResidualOtherLoss(config.residual_other_weight, config.residual_peer_sha256,
                                            drums_checkpoint=drums_checkpoint, vocals_checkpoint=vocals_checkpoint,
-                                           device=device)
+                                           device=device, sdr_weight=config.residual_other_sdr_weight)
     release_margin = None
     if config.release_margin_weight:
         from ._losses.release_margin import BassReleaseMargin

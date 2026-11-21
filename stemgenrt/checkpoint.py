@@ -409,12 +409,14 @@ def _validate_training_provenance(config, provenance):
                  and provenance.get("current_stage_bass_solo_sampling") == {
                      **solo_sampling_spec(), "reference_sha256": config.get("bass_release_sha256")},
                  "Bass solo sampling checkpoint recipe differs from its training provenance")
-    if ("residual_other_weight" in config or "residual_peer_sha256" in config
+    if ("residual_other_weight" in config or "residual_other_sdr_weight" in config or "residual_peer_sha256" in config
             or "current_stage_residual_other" in provenance):
         from ._losses.residual_other import specification
         weight = config.get("residual_other_weight", 0.)
-        _require(weight and config.get("model_family") == "specialist" and config.get("target_source") == "bass"
-                 and provenance.get("current_stage_residual_other") == specification(weight, config.get("residual_peer_sha256")),
+        sdr_weight = config.get("residual_other_sdr_weight", 0.)
+        _require((weight or sdr_weight) and config.get("model_family") == "specialist" and config.get("target_source") == "bass"
+                 and provenance.get("current_stage_residual_other") == specification(
+                     weight, config.get("residual_peer_sha256"), sdr_weight=sdr_weight),
                  "Residual Other checkpoint recipe differs from its training provenance")
     if ("teacher_coefficient" in config or "teacher_supervision" in config
             or "branch_memory_current_stage_teacher_supervision" in provenance
