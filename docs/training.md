@@ -419,6 +419,14 @@ The checkpoint records the screening schedule and the frozen Bass fingerprint.
 Resume with the same recipe. Use the final Bass EMA with the independent model
 exporter and the released Drums and Vocals checkpoints.
 
+Evaluate all three final EMAs on the same excerpts using the released peers.
+Pass the per-song results from `score_bass_interpolation_track` to
+`stemgenrt.bass_sampling_eval.compare_sampling_runs(fixed, alternating, candidate)`.
+The report pairs songs by name and excerpt, combines ordinary Bass and Other
+SDR gains with equal weight, and measures how much of the alternating sampler's
+isolated-Bass gain over fixed sampling the candidate retains. The default
+95% percentile intervals use 20,000 paired song resamples.
+
 ### Train Bass with active-window residual Other SDR
 
 Use `configs/bass-residual-window-sdr.json` with the same released Bass EMA,
