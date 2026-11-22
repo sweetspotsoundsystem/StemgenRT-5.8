@@ -405,6 +405,28 @@ hard-solo sampler. Compare their final EMAs on the same evaluation excerpts
 at the original levels. The journal records the crop addresses, audio hashes
 before and after remixing, learning rates, and selected views.
 
+### Screen the Bass-only view every fourth update
+
+Use `configs/bass-quarter-rate-solo.json` with the training command, released
+Bass initialization and frozen reference checkpoints from the matched sampling
+experiment. This continuation uses the same 8,000 updates and crop addresses
+as `configs/bass-hard-solo-repeat.json`. It screens the 16 isolated Bass crops
+on one-based updates 4, 8, 12 and every fourth update thereafter. On other
+updates the trainer uses crop 15 for the Bass-only view. It records the
+selected index on every update and the release scores for each screened batch.
+
+The checkpoint records the screening schedule and the frozen Bass fingerprint.
+Resume with the same recipe. Use the final Bass EMA with the independent model
+exporter and the released Drums and Vocals checkpoints.
+
+Evaluate all three final EMAs on the same excerpts using the released peers.
+Pass the per-song results from `score_bass_interpolation_track` to
+`stemgenrt.bass_sampling_eval.compare_sampling_runs(fixed, alternating, candidate)`.
+The report pairs songs by name and excerpt, combines ordinary Bass and Other
+SDR gains with equal weight, and measures how much of the alternating sampler's
+isolated-Bass gain over fixed sampling the candidate retains. The default
+95% percentile intervals use 20,000 paired song resamples.
+
 ### Train Bass with active-window residual Other SDR
 
 Use `configs/bass-residual-window-sdr.json` with the same released Bass EMA,
