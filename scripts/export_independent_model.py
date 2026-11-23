@@ -104,7 +104,7 @@ def main():
         parser.error("Bass mask pilot arm must be supervised or student")
     if sum(value is not None for value in (args.bass_replicate_checkpoint, args.bass_blend_parent,
                                            args.bass_sampling_parent, args.bass_mask_pilot)) > 1:
-        parser.error("Choose a single Bass endpoint construction method")
+        parser.error("Choose a single Bass parameter-averaging method or a paired mask endpoint")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     assert not torch.cuda.is_initialized()
