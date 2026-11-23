@@ -115,3 +115,20 @@ def compare_sampling_streams(original, repeat, *, seed=20261123, draws=20000):
             difference[contrast][metric] = _summary({song: x - b[song] for song, x in a.items()}, seed, draws)
     return {"streams": results, "stream_mean": average, "original_minus_repeat": difference,
             "primary_joint_db": average["candidate_minus_matched_control"]["joint_sdr"]}
+
+
+def compare_bass_sampling_averages(fixed, alternating, balanced, *, seed=20261123, draws=20000):
+    """Compare the four-checkpoint Bass model with the two within-schedule models on the same songs."""
+    paired = compare_sampling_runs(fixed, alternating, balanced, seed=seed, draws=draws)
+    fixed_delta = paired["candidate_minus_fixed"]
+    alternating_delta = paired["candidate_minus_matched_control"]
+    midpoint = {}
+    for metric, fixed_summary in fixed_delta.items():
+        a = fixed_summary["by_song"]
+        b = alternating_delta[metric]["by_song"]
+        midpoint[metric] = _summary({name: (v + b[name]) / 2 for name, v in a.items()}, seed, draws)
+    solo = paired["solo_preservation"]
+    return {"versus_fixed": fixed_delta, "versus_alternating": alternating_delta, "versus_score_midpoint": midpoint,
+            "primary_joint_db": midpoint["joint_sdr"], "solo_preservation": {
+                "alternating_minus_fixed_db": solo["alternating_minus_fixed_db"],
+                "balanced_minus_fixed_db": solo["quarter_rate_minus_fixed_db"], "retained_fraction": solo["retained_fraction"]}}

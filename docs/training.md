@@ -489,3 +489,34 @@ The exported graph runs one Bass specialist. The export manifest records both
 checkpoint hashes, the crop ranges, each EMA fingerprint, and the resulting
 state fingerprint. The original checkpoints retain the optimizer and RNG states
 needed to recover each individual training run.
+
+### Average the fixed and alternating Bass runs on two streams
+
+Train all four Bass continuations from the same released Bass EMA, with the
+same frozen Drums and Vocals peers and release reference used in the matched
+sampling experiment. Use a separate output directory, optimizer and EMA for
+each run. Resume an interrupted parent with its own config and checkpoint.
+
+| Training stream | Fixed Bass-only crop | Alternating hard Bass-only crop |
+| --- | --- | --- |
+| Original | `configs/bass-margin-low-lr-finetune.json` | `configs/bass-hard-solo-finetune.json` |
+| Repeat | `configs/bass-low-lr-repeat.json` | `configs/bass-hard-solo-repeat.json` |
+
+Each recipe runs 8,000 updates. Verify each final full training checkpoint and
+its SHA-256. In the independent exporter, supply the original fixed checkpoint
+with `--bass-checkpoint` and `--bass-sha256`. Add the other three checkpoints
+with one `--bass-sampling-parent CHECKPOINT SHA256` per checkpoint. Use
+`--expected-updates 40000 --bass-updates 8000 --bass-parent-updates 40000`
+and the released Drums and Vocals checkpoints. The exporter checks both
+training schedules on both stream ranges, their common initialization, data,
+training settings and complete Adam and EMA state. It averages the four final
+EMA parameters with equal weights in FP64 and rounds once to FP32. The exported
+graph runs one Bass specialist. Its checkpoint report records all four parent
+digests, sampling schedules and crop ranges.
+
+For evaluation, export each pair separately with `--bass-replicate-checkpoint`
+and its digest. Pass the fixed-pair, alternating-pair and four-parent per-song
+records to `stemgenrt.bass_sampling_eval.compare_bass_sampling_averages`.
+It reports each paired difference and the gain over the mean of the two
+within-schedule scores. Its joint score gives equal weight to ordinary Bass
+and residual Other SDR within each song.

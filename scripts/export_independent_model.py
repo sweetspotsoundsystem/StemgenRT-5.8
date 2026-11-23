@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from stemgenrt import checkpoint as ck
 from stemgenrt.bass_interpolation import interpolate_bass_emas
-from stemgenrt.bass_replicate_average import average_bass_replicates
+from stemgenrt.bass_replicate_average import average_bass_replicates, average_bass_sampling_runs
 from stemgenrt.independent import IndependentStems, SOURCE_ORDER
 from stemgenrt.independent_export import export_fp32
 from examples.native_independent.prepare import load_endpoint
@@ -54,6 +54,7 @@ def native_fixture(model, output, report, checkpoints):
     bass_role = checkpoints.get("bass", {}).get("role")
     reference = {
         "interpolated_inference": "Independent native PyTorch models with interpolated Bass, zero state, one graph flush and exact partial-EOF crop",
+        "balanced_sampling_average_inference": "Independent native PyTorch models with four matched Bass sampling endpoints, zero state, one graph flush and exact partial-EOF crop",
         "replicate_average_inference": "Independent native PyTorch models with averaged Bass replicates, zero state, one graph flush and exact partial-EOF crop",
     }.get(bass_role, "Independent native PyTorch EMA models; zero state, one graph flush, exact partial-EOF crop")
     write(output / "independent-pytorch.json", {
@@ -76,6 +77,8 @@ def main():
     parser.add_argument("--bass-trained-fraction", type=float, help="Fraction of the continuation in the parameter interpolation")
     parser.add_argument("--bass-replicate-checkpoint", type=Path, help="Second matched training run for an equal average of the two final Bass EMAs")
     parser.add_argument("--bass-replicate-sha256", help="Expected SHA-256 of the second full Bass training checkpoint")
+    parser.add_argument("--bass-sampling-parent", nargs=2, action="append", metavar=("CHECKPOINT", "SHA256"),
+                        help="Additional Bass checkpoint and digest for a two-stream fixed/alternating average; supply three times")
     for source in SOURCE_ORDER[:3]:
         parser.add_argument("--"+source+"-checkpoint", type=Path, required=True)
         parser.add_argument("--"+source+"-sha256", required=True)
@@ -91,7 +94,9 @@ def main():
         parser.error("Bass interpolation requires the parent checkpoint, its SHA-256 and the trained fraction")
     if (args.bass_replicate_checkpoint is None) != (args.bass_replicate_sha256 is None):
         parser.error("Bass replicate averaging requires the second checkpoint and its SHA-256")
-    if args.bass_replicate_checkpoint is not None and args.bass_blend_parent is not None:
+    if args.bass_sampling_parent is not None and len(args.bass_sampling_parent) != 3:
+        parser.error("Supply exactly three additional Bass sampling parents")
+    if sum(value is not None for value in (args.bass_replicate_checkpoint, args.bass_blend_parent, args.bass_sampling_parent)) > 1:
         parser.error("Choose a single Bass parameter-averaging method")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
@@ -127,6 +132,13 @@ def main():
         checkpoints["bass"] = {"role": "replicate_average_inference", "updates": first["updates"],
             "parent_updates": first["parent_updates"], "total_updates": first["total_updates"],
             "replicate_average": bass.provenance["bass_replicate_average"], "state_sha256": ck.state_sha256(bass.state_dict())}
+    if args.bass_sampling_parent is not None:
+        first = checkpoints["bass"]
+        bass = average_bass_sampling_runs([(args.bass_checkpoint, args.bass_sha256), *args.bass_sampling_parent])
+        children["bass"] = bass
+        checkpoints["bass"] = {"role": "balanced_sampling_average_inference", "updates": first["updates"],
+            "parent_updates": first["parent_updates"], "total_updates": first["total_updates"],
+            "sampling_average": bass.provenance["bass_sampling_average"], "state_sha256": ck.state_sha256(bass.state_dict())}
     model = IndependentStems(**children)
     args.output.mkdir(parents=True)
     report = export_fp32(model, args.output / "model.onnx")

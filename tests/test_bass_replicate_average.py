@@ -6,12 +6,12 @@ import sys
 import pytest
 import torch
 
-from stemgenrt.bass_replicate_average import average_bass_replicates
+from stemgenrt.bass_replicate_average import average_bass_replicates, average_bass_sampling_runs
 from stemgenrt.checkpoint import ParameterEMA, file_sha256, load_model, save_training_checkpoint, state_sha256
 from stemgenrt.specialist import SpecialistSeparator
 
 
-def make_endpoint(path, *, start, direction, seed=29, identity="same", scheduled_steps=1, lr=0.01):
+def make_endpoint(path, *, start, direction, seed=29, identity="same", scheduled_steps=1, lr=0.01, with_margin=False, sampling=None):
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
         model = SpecialistSeparator(source="bass", band_width=16, global_width=16, layers=1).train()
@@ -26,6 +26,14 @@ def make_endpoint(path, *, start, direction, seed=29, identity="same", scheduled
               "band_width": 16, "band_global_width": 16, "band_layers": 1,
               "specialist_feature_n_fft": model.feature_n_fft, "specialist_waveform_basis": model.waveform_basis,
               "batch_size": 16, "steps": scheduled_steps, "data_start": start, "lr": lr}
+    if with_margin:
+        from stemgenrt._losses.release_margin import specification as margin_spec
+        config.update(release_margin_weight=.1, bass_release_sha256="a"*64)
+        model.provenance["current_stage_bass_release_margin"] = margin_spec(.1, "a"*64)
+    if sampling is not None:
+        from stemgenrt._losses.solo_sampling import specification as sampler_spec
+        config["bass_solo_sampling"] = sampling
+        model.provenance["current_stage_bass_solo_sampling"] = {**sampler_spec(sampling), "reference_sha256": "a"*64}
     return save_training_checkpoint(path, model, optimizer, ema, step=1, next_sample_index=start+16,
                                     config=config, data_identity={"train": identity}, compressed=False)
 
@@ -77,6 +85,9 @@ def test_rejects_unmatched_or_incomplete_continuations(tmp_path, changes, messag
 
 
 @pytest.mark.parametrize("extra,message", [
+    (["--bass-sampling-parent", "second.pt", "2"*64], "exactly three additional"),
+    (["--bass-sampling-parent", "second.pt", "2"*64]*3 + ["--bass-replicate-checkpoint", "second.pt",
+      "--bass-replicate-sha256", "2"*64], "single Bass parameter-averaging method"),
     (["--bass-replicate-checkpoint", "second.pt"], "second checkpoint and its SHA-256"),
     (["--bass-replicate-checkpoint", "second.pt", "--bass-replicate-sha256", "2" * 64,
       "--bass-blend-parent", "parent.pt", "--bass-blend-parent-sha256", "3" * 64,
@@ -90,3 +101,37 @@ def test_export_rejects_ambiguous_replicate_arguments_before_creating_output(tmp
         args.extend([f"--{stem}-checkpoint", "unused.pt", f"--{stem}-sha256", "1" * 64])
     result = subprocess.run([*args, *extra], capture_output=True, text=True)
     assert result.returncode == 2 and message in result.stderr and not out.exists()
+
+
+def test_balanced_sampling_uses_four_complete_training_parents_and_one_fp32_rounding(tmp_path):
+    from stemgenrt._losses.solo_sampling import VERSION
+    records = []
+    models = []
+    for i, (start, sampler) in enumerate(((1008, None), (1008, VERSION), (1024, None), (1024, VERSION))):
+        ep = make_endpoint(tmp_path/f"cell-{i}.pt", start=start, direction=(1. if i<3 else -1.),
+                           with_margin=True, sampling=sampler)
+        records.append((ep["path"], ep["sha256"]))
+        models.append(load_model(ep["path"], expected_sha256=ep["sha256"], role="ema"))
+    rng = torch.get_rng_state().clone()
+    result = average_bass_sampling_runs(reversed(records))
+    assert torch.equal(rng, torch.get_rng_state()) and not result.training
+    for name, v in result.named_parameters():
+        expected = sum(m.get_parameter(name).double() for m in models) / 4
+        assert torch.equal(expected.float(), v) and not v.requires_grad
+    assert all(torch.equal(b,models[0].get_buffer(n)) for n,b in result.named_buffers())
+    info = result.provenance["bass_sampling_average"]
+    assert info["output_state_sha256"] == state_sha256(result.state_dict()) and info["additional_optimizer_updates"] == 0
+    assert [p["checkpoint_sha256"] for p in info["parents"]] == [h for _,h in records]
+    assert all(p["weight"] == .25 and p["updates"] == 1 for p in info["parents"])
+    assert [p["sampling"] for p in info["parents"]] == ["fixed","alternating"]*2
+    assert "current_stage_bass_solo_sampling" not in result.provenance
+    with pytest.raises(ValueError, match="one checkpoint per"):
+        average_bass_sampling_runs(records[:3]+records[:1])
+    with pytest.raises(ValueError, match="four"):
+        average_bass_sampling_runs(records[:3])
+    shifted = make_endpoint(tmp_path/"shifted.pt",start=1040,direction=1.,with_margin=True,sampling=VERSION)
+    with pytest.raises(ValueError, match="same two training streams"):
+        average_bass_sampling_runs([*records[:3],(shifted["path"],shifted["sha256"])])
+    different = make_endpoint(tmp_path/"different.pt",start=1024,direction=1.,with_margin=True,sampling=VERSION,lr=.02)
+    with pytest.raises(ValueError, match="training recipes"):
+        average_bass_sampling_runs([*records[:3],(different["path"],different["sha256"])])
