@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 import torch
 from stemgenrt import checkpoint as ck
+from stemgenrt.bass_mask_pilot import ARMS as MASK_ARMS, assemble_endpoint as assemble_mask_endpoint
 from stemgenrt.bass_interpolation import interpolate_bass_emas
 from stemgenrt.bass_replicate_average import average_bass_replicates, average_bass_sampling_runs
 from stemgenrt.independent import IndependentStems, SOURCE_ORDER
@@ -56,6 +57,7 @@ def native_fixture(model, output, report, checkpoints):
         "interpolated_inference": "Independent native PyTorch models with interpolated Bass, zero state, one graph flush and exact partial-EOF crop",
         "balanced_sampling_average_inference": "Independent native PyTorch models with four matched Bass sampling endpoints, zero state, one graph flush and exact partial-EOF crop",
         "replicate_average_inference": "Independent native PyTorch models with averaged Bass replicates, zero state, one graph flush and exact partial-EOF crop",
+        "paired_mask_inference": "Independent native PyTorch models with final trained Bass output heads, zero state, one graph flush and exact partial-EOF crop",
     }.get(bass_role, "Independent native PyTorch EMA models; zero state, one graph flush, exact partial-EOF crop")
     write(output / "independent-pytorch.json", {
         "format": "SGRTG001: LE uint32 case count, then LE uint32 frames, input[2,T], deployed[4,2,T] LE float32",
@@ -79,6 +81,8 @@ def main():
     parser.add_argument("--bass-replicate-sha256", help="Expected SHA-256 of the second full Bass training checkpoint")
     parser.add_argument("--bass-sampling-parent", nargs=2, action="append", metavar=("CHECKPOINT", "SHA256"),
                         help="Additional Bass checkpoint and digest for a two-stream fixed/alternating average; supply three times")
+    parser.add_argument("--bass-mask-pilot", nargs=3, metavar=("CHECKPOINT", "SHA256", "ARM"),
+                        help="Final paired output-head checkpoint, digest and supervised or student arm")
     for source in SOURCE_ORDER[:3]:
         parser.add_argument("--"+source+"-checkpoint", type=Path, required=True)
         parser.add_argument("--"+source+"-sha256", required=True)
@@ -96,8 +100,11 @@ def main():
         parser.error("Bass replicate averaging requires the second checkpoint and its SHA-256")
     if args.bass_sampling_parent is not None and len(args.bass_sampling_parent) != 3:
         parser.error("Supply exactly three additional Bass sampling parents")
-    if sum(value is not None for value in (args.bass_replicate_checkpoint, args.bass_blend_parent, args.bass_sampling_parent)) > 1:
-        parser.error("Choose a single Bass parameter-averaging method")
+    if args.bass_mask_pilot is not None and args.bass_mask_pilot[2] not in MASK_ARMS:
+        parser.error("Bass mask pilot arm must be supervised or student")
+    if sum(value is not None for value in (args.bass_replicate_checkpoint, args.bass_blend_parent,
+                                           args.bass_sampling_parent, args.bass_mask_pilot)) > 1:
+        parser.error("Choose a single Bass endpoint construction method")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     assert not torch.cuda.is_initialized()
@@ -139,6 +146,15 @@ def main():
         checkpoints["bass"] = {"role": "balanced_sampling_average_inference", "updates": first["updates"],
             "parent_updates": first["parent_updates"], "total_updates": first["total_updates"],
             "sampling_average": bass.provenance["bass_sampling_average"], "state_sha256": ck.state_sha256(bass.state_dict())}
+    if args.bass_mask_pilot is not None:
+        path, digest, arm = args.bass_mask_pilot
+        parents = {s: row["sha256"] for s, row in checkpoints.items()}
+        bass = assemble_mask_endpoint(children["bass"], path, digest, arm, parents)
+        children["bass"] = bass
+        provenance = bass.provenance["bass_mask_pilot"]
+        checkpoints["bass"] = {"role": "paired_mask_inference", "updates": provenance["updates"],
+            "parent_updates": bass.provenance["parent_training_updates"], "total_updates": bass.provenance["training_updates"],
+            "paired_training": provenance, "state_sha256": ck.state_sha256(bass.state_dict())}
     model = IndependentStems(**children)
     args.output.mkdir(parents=True)
     report = export_fp32(model, args.output / "model.onnx")
