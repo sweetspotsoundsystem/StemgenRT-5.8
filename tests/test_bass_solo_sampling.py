@@ -126,6 +126,11 @@ def test_quarter_rate_checkpoint_binds_schedule_and_matching_recipe():
     hard = recipe("bass-hard-solo-repeat.json")
     quarter = recipe("bass-quarter-rate-solo.json")
     assert quarter == {**hard, "bass_solo_sampling":sampling.QUARTER_RATE_VERSION}
+    original = recipe("bass-quarter-rate-original-stream.json")
+    assert original == {**quarter, "data_start": 8_640_000}
+    assert original == {**recipe("bass-hard-solo-finetune.json"),
+                        "bass_solo_sampling": sampling.QUARTER_RATE_VERSION}
+    assert original["data_start"] + original["steps"] * original["batch_size"] == quarter["data_start"]
     config = TrainingConfig(**quarter)
     assert config.validate() == config
     digest, weight = config.bass_release_sha256, config.release_margin_weight

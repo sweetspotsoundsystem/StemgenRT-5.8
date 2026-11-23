@@ -80,3 +80,38 @@ def compare_sampling_runs(fixed, alternating, candidate, *, seed=20261121, draws
     return {**summaries, "primary_joint_db":summaries["candidate_minus_matched_control"]["joint_sdr"],
             "solo_preservation":{"alternating_minus_fixed_db":parent_gain, "quarter_rate_minus_fixed_db":candidate_gain,
                                  "retained_fraction":candidate_gain/parent_gain if parent_gain is not None and parent_gain>0 else None}}
+
+
+def compare_sampling_streams(original, repeat, *, seed=20261123, draws=20000):
+    """Pair the three sampling schedules across two training streams on the same songs.
+
+    Each stream maps fixed, alternating and candidate to the track records accepted
+    by compare_sampling_runs. Average the two effects within each song before
+    resampling songs. The interaction is original minus repeat and the intervals
+    describe song variation conditional on the two training streams.
+    """
+    results = {}
+    intervals = None
+    for name, stream in (("original", original), ("repeat", repeat)):
+        candidate = list(stream["candidate"])
+        report = compare_sampling_runs(stream["fixed"], stream["alternating"], candidate, seed=seed, draws=draws)
+        spans = {row["ordinary"]["name"]: row["ordinary"]["excerpts"] for row in candidate}
+        if intervals is not None and spans != intervals:
+            raise ValueError("Both training streams require identical songs and excerpts")
+        intervals = spans
+        results[name] = report
+
+    average = {}
+    difference = {}
+    for contrast in ("candidate_minus_matched_control", "candidate_minus_fixed"):
+        average[contrast] = {}
+        difference[contrast] = {}
+        for metric, summary in results["original"][contrast].items():
+            a = summary["by_song"]
+            b = results["repeat"][contrast][metric]["by_song"]
+            if a.keys() != b.keys():
+                raise ValueError("Metric eligibility differs between training streams")
+            average[contrast][metric] = _summary({song: (x + b[song]) / 2 for song, x in a.items()}, seed, draws)
+            difference[contrast][metric] = _summary({song: x - b[song] for song, x in a.items()}, seed, draws)
+    return {"streams": results, "stream_mean": average, "original_minus_repeat": difference,
+            "primary_joint_db": average["candidate_minus_matched_control"]["joint_sdr"]}
