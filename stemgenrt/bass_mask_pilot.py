@@ -1,5 +1,6 @@
 """Paired supervised and teacher-assisted updates of a causal Bass specialist's output heads."""
 import copy
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -12,17 +13,26 @@ ARMS = ("supervised", "student")
 LR = 0.0003
 
 
+class PairedHeadRecipe(NamedTuple):
+    schema: str
+    arms: tuple[str, str]
+    targets: tuple[str, ...]
+
+
+BASS_RECIPE = PairedHeadRecipe(SCHEMA, ARMS, ("direct", "power"))
+
+
 def mask_parameters(model):
     if type(model) is not SpecialistSeparator or model.sources != ("bass",):
         raise ValueError("Require a Bass specialist")
     return {name: param for name, param in model.named_parameters() if name.startswith("backbone.mask_heads.")}
 
 
-def new_students(parent):
+def new_students(parent, *, recipe=BASS_RECIPE, parameters=mask_parameters):
     models, optimizers = {}, {}
-    for arm in ARMS:
+    for arm in recipe.arms:
         model = copy.deepcopy(parent).eval().requires_grad_(False)
-        params = mask_parameters(model)
+        params = parameters(model)
         for param in params.values():
             param.requires_grad_(True)
         models[arm] = model
@@ -63,16 +73,16 @@ def mask_loss(estimates, truth, scales, teacher_pair=None):
     return .4 * normalized[:2].sum() + .1 * normalized[2:].sum()
 
 
-def validated_payload(payload, *, plan_sha256=None, runtime=False):
-    if (payload.get("schema") != SCHEMA or tuple(payload["arms"]) != ARMS
-            or payload["target"] not in ("direct", "power")
+def validated_payload(payload, *, plan_sha256=None, runtime=False, recipe=BASS_RECIPE):
+    if (payload.get("schema") != recipe.schema or tuple(payload["arms"]) != recipe.arms
+            or payload["target"] not in recipe.targets
             or not 0 < payload["step"] <= payload["steps"] or len(payload["history"]) != payload["step"]
             or plan_sha256 is not None and payload["plan_sha256"] != plan_sha256):
         raise ValueError("Paired training checkpoint identity or cursor differs")
     if runtime and (payload["torch_version"] != str(torch.__version__) or payload["numpy_version"] != np.__version__
                     or torch.cuda.is_initialized() or torch.get_num_threads() != 1):
         raise ValueError("Exact recovery requires the original single-thread CPU runtime")
-    for arm in ARMS:
+    for arm in recipe.arms:
         store = payload["arms"][arm]
         if checkpoint.state_sha256(store["parameters"]) != store["state_sha256"]:
             raise ValueError("Bass output head checksum differs")
@@ -94,13 +104,14 @@ def validated_payload(payload, *, plan_sha256=None, runtime=False):
     return payload
 
 
-def save_step(path, models, optimizers, parents, base_state_sha256, plan_sha256, role, steps, history):
+def save_step(path, models, optimizers, parents, base_state_sha256, plan_sha256, role, steps, history,
+              *, recipe=BASS_RECIPE, parameters=mask_parameters):
     arms = {}
-    for arm in ARMS:
-        tensors = {name: p.detach() for name, p in mask_parameters(models[arm]).items()}
+    for arm in recipe.arms:
+        tensors = {name: p.detach() for name, p in parameters(models[arm]).items()}
         arms[arm] = {"parameters": tensors, "state_sha256": checkpoint.state_sha256(tensors),
                      "adam": optimizers[arm].state_dict()}
-    payload = {"schema": SCHEMA, "plan_sha256": plan_sha256, "parents": parents,
+    payload = {"schema": recipe.schema, "plan_sha256": plan_sha256, "parents": parents,
                "base_state_sha256": base_state_sha256, "target": role, "step": len(history),
                "steps": steps, "history": history, "arms": arms, "rng": checkpoint._rng_state(),
                "backend": checkpoint._backend_state(), "torch_version": str(torch.__version__),
@@ -108,8 +119,8 @@ def save_step(path, models, optimizers, parents, base_state_sha256, plan_sha256,
     return checkpoint._atomic_save(path, payload)
 
 
-def apply_heads(model, saved):
-    target = mask_parameters(model)
+def apply_heads(model, saved, *, parameters=mask_parameters):
+    target = parameters(model)
     checkpoint._validate_tensors(saved, target)
     if list(target) != list(saved):
         raise ValueError("Changed output head order")
@@ -118,15 +129,16 @@ def apply_heads(model, saved):
             p.copy_(saved[name])
 
 
-def restore_students(path, models, optimizers, *, plan_sha256, target, parents, base_state_sha256, schedule):
+def restore_students(path, models, optimizers, *, plan_sha256, target, parents, base_state_sha256, schedule,
+                     recipe=BASS_RECIPE, parameters=mask_parameters):
     saved = validated_payload(torch.load(path, map_location="cpu", weights_only=True),
-                              plan_sha256=plan_sha256, runtime=True)
+                              plan_sha256=plan_sha256, runtime=True, recipe=recipe)
     if (saved["base_state_sha256"] != base_state_sha256 or saved["parents"] != parents
             or saved["target"] != target or saved["steps"] != len(schedule)
             or [r["address"] for r in saved["history"]] != schedule[:saved["step"]]):
         raise ValueError("Parents, teaching target or scheduled addresses changed at recovery")
-    for arm in ARMS:
-        apply_heads(models[arm], saved["arms"][arm]["parameters"])
+    for arm in recipe.arms:
+        apply_heads(models[arm], saved["arms"][arm]["parameters"], parameters=parameters)
         optimizers[arm].load_state_dict(saved["arms"][arm]["adam"])
     checkpoint._restore_rng(saved["rng"], saved["backend"])
     return saved["history"]
