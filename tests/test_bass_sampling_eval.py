@@ -79,3 +79,16 @@ def test_stream_comparison_checks_cross_stream_eligibility_and_excerpts():
     other["ordinary"]["excerpts"] = []
     with pytest.raises(ValueError, match="songs and excerpts"):
         compare_sampling_streams(base, stream(other), draws=2)
+
+
+def test_balanced_sampling_scores_pair_both_schedule_controls_before_bootstrapping():
+    from stemgenrt.bass_sampling_eval import compare_bass_sampling_averages
+    fixed = [song("a", 0., 0., 1.), song("b", 0., 0., 1.)]
+    alternating = [song("b", 6., 2., 3.), song("a", 2., 2., 3.)]
+    balanced = [song("a", 2., 2., 2.), song("b", 1., 1., 2.)]
+    report = compare_bass_sampling_averages(fixed, alternating, balanced, seed=9, draws=200)
+    assert report["primary_joint_db"]["by_song"] == {"a": 1., "b": -1.}
+    samples = np.random.default_rng(9).choice([1., -1.], size=(200,2)).mean(1)
+    np.testing.assert_array_equal(report["primary_joint_db"]["paired_song_ci95_db"], np.quantile(samples,[.025,.975]))
+    assert report["solo_preservation"] == {"alternating_minus_fixed_db":2., "balanced_minus_fixed_db":1., "retained_fraction":.5}
+    assert report["versus_score_midpoint"]["ordinary_absent_dbfs"]["eligible_songs"] == 0
