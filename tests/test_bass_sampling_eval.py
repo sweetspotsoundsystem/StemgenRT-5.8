@@ -3,7 +3,7 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-from stemgenrt.bass_sampling_eval import compare_sampling_runs
+from stemgenrt.bass_sampling_eval import compare_sampling_runs, compare_sampling_streams
 
 
 def song(name, bass, other, solo, quiet=None):
@@ -51,3 +51,31 @@ def test_paired_sampling_scores_check_coverage_and_eligibility():
         compare_sampling_runs(base,base,[song("a",float("nan"),0.,2.)])
     with pytest.raises(ValueError,match="draws"):
         compare_sampling_runs(base,base,base,draws=False)
+
+
+def test_stream_comparison_resamples_songs_with_both_training_streams_attached():
+    baseline = [song("a", 0., 0., 0.), song("b", 0., 0., 0.)]
+    original = dict(fixed=baseline, alternating=baseline,
+                    candidate=[song("a", 1., 3., 1.), song("b", 3., 5., 2.)])
+    repeat = dict(fixed=baseline, alternating=baseline,
+                  candidate=iter([song("b", -1., -3., 2.), song("a", 5., 3., 1.)]))
+    result = compare_sampling_streams(original, repeat, seed=17, draws=200)
+    primary = result["primary_joint_db"]
+    assert primary["by_song"] == {"a": 3., "b": 1.}
+    assert result["original_minus_repeat"]["candidate_minus_matched_control"]["joint_sdr"]["by_song"] == {"a": -2., "b": 6.}
+    samples = np.random.default_rng(17).choice([3., 1.], size=(200, 2)).mean(1)
+    np.testing.assert_array_equal(primary["paired_song_ci95_db"], np.quantile(samples, [.025, .975]))
+    assert result["stream_mean"]["candidate_minus_fixed"]["ordinary_absent_dbfs"]["eligible_songs"] == 0
+    assert result["streams"]["original"]["solo_preservation"]["retained_fraction"] is None
+
+
+def test_stream_comparison_checks_cross_stream_eligibility_and_excerpts():
+    def stream(record):
+        return {k: [record] for k in ("fixed", "alternating", "candidate")}
+    base = stream(song("a", 0., 0., 0.))
+    with pytest.raises(ValueError, match="between training streams"):
+        compare_sampling_streams(base, stream(song("a", 0., 0., 0., -40.)), draws=2)
+    other = song("a", 0., 0., 0.)
+    other["ordinary"]["excerpts"] = []
+    with pytest.raises(ValueError, match="songs and excerpts"):
+        compare_sampling_streams(base, stream(other), draws=2)

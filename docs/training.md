@@ -427,6 +427,21 @@ SDR gains with equal weight, and measures how much of the alternating sampler's
 isolated-Bass gain over fixed sampling the candidate retains. The default
 95% percentile intervals use 20,000 paired song resamples.
 
+To repeat the quarter-rate schedule on the original stream, pass
+`configs/bass-quarter-rate-original-stream.json` to the same training command.
+It starts at crop address 8,640,000 and ends just before 8,768,000. Its matched
+controls use `configs/bass-margin-low-lr-finetune.json` for fixed sampling and
+`configs/bass-hard-solo-finetune.json` for alternating sampling. Use a separate
+output directory for each run and its original config for checkpoint recovery.
+
+Call `stemgenrt.bass_sampling_eval.compare_sampling_streams(original, repeat)`
+with a mapping from `fixed`, `alternating` and `candidate` to each stream's
+ordinary and controlled per-song records. The function averages the two
+quarter-rate effects within each song before bootstrapping songs. It also
+reports the original-stream effect minus the repeat-stream effect and the
+isolated-Bass gain retained on each stream. The intervals describe variation
+across songs for these two training streams.
+
 ### Train Bass with active-window residual Other SDR
 
 Use `configs/bass-residual-window-sdr.json` with the same released Bass EMA,
